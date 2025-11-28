@@ -13,7 +13,8 @@ use linera_sdk::{
     Contract, ContractRuntime,
 };
 use ticketing::{
-    BalanceEntry, Event, EventId, Message, Operation, Ticket, TicketId, TicketingAbi, MAX_BPS,
+    BalanceEntry, Event, EventId, Listing, ListingStatus, Message, Operation, Ticket, TicketId,
+    TicketingAbi, MAX_BPS,
 };
 
 use self::state::TicketingState;
@@ -36,6 +37,14 @@ impl Contract for TicketingContract {
     type EventValue = ();
 
     async fn load(runtime: ContractRuntime<Self>) -> Self {
+        // Enable better panic messages in the browser for wasm builds when
+        // the optional `console_panic` feature is enabled. Do NOT enable
+        // this feature when publishing to Linera (it requires JS imports).
+        #[cfg(feature = "console_panic")]
+        {
+            console_error_panic_hook::set_once();
+        }
+
         let state = TicketingState::load(runtime.root_view_storage_context())
             .await
             .expect("Failed to load state");
@@ -118,6 +127,32 @@ impl Contract for TicketingContract {
                 } else {
                     self.remote_claim(source_account, ticket_id, target_account, sale_price);
                 }
+            }
+            Operation::CreateListing {
+                seller,
+                ticket_id,
+                price,
+            } => {
+                self.runtime
+                    .check_account_permission(seller)
+                    .expect("Permission for CreateListing operation");
+                self.create_listing(seller, ticket_id, price).await;
+            }
+            Operation::CancelListing { seller, ticket_id } => {
+                self.runtime
+                    .check_account_permission(seller)
+                    .expect("Permission for CancelListing operation");
+                self.cancel_listing(seller, ticket_id).await;
+            }
+            Operation::BuyListing {
+                buyer,
+                ticket_id,
+                price,
+            } => {
+                self.runtime
+                    .check_account_permission(buyer.owner)
+                    .expect("Permission for BuyListing operation");
+                self.buy_listing(buyer, ticket_id, price).await;
             }
         }
     }
@@ -411,5 +446,74 @@ impl TicketingContract {
             .expect("Error retrieving owner set")
             .expect("Owner set missing");
         owned.remove(&ticket.ticket_id);
+    }
+
+    // Marketplace: create a listing for a ticket owned by `seller`.
+    async fn create_listing(&mut self, seller: AccountOwner, ticket_id: TicketId, price: u128) {
+        let mut ticket = self.get_ticket(&ticket_id).await;
+        assert_eq!(ticket.owner, seller, "Only owner can list a ticket");
+
+        // Ensure no active listing exists
+        if let Some(existing) = self
+            .state
+            .listings
+            .get(&ticket_id)
+            .await
+            .expect("Failure checking listing")
+        {
+            match existing.status {
+                ListingStatus::Active => panic!("Ticket already has an active listing"),
+                _ => {}
+            }
+        }
+
+        let listing = Listing {
+            ticket_id: ticket_id.clone(),
+            seller,
+            price,
+            status: ListingStatus::Active,
+        };
+
+        self.state
+            .listings
+            .insert(&ticket_id, listing)
+            .expect("Failed to insert listing");
+    }
+
+    async fn cancel_listing(&mut self, seller: AccountOwner, ticket_id: TicketId) {
+        // Only seller can cancel
+        let mut listing = self
+            .state
+            .listings
+            .get_mut(&ticket_id)
+            .await
+            .expect("Failure loading listing")
+            .expect("Listing not found");
+        assert_eq!(listing.seller, seller, "Only seller can cancel listing");
+        listing.status = ListingStatus::Cancelled;
+    }
+
+    async fn buy_listing(&mut self, buyer: Account, ticket_id: TicketId, price: u128) {
+        // Load and validate listing
+        let mut listing = self
+            .state
+            .listings
+            .get_mut(&ticket_id)
+            .await
+            .expect("Failure loading listing")
+            .expect("Listing not found");
+
+        assert_eq!(listing.status, ListingStatus::Active, "Listing not active");
+        assert_eq!(listing.price, price, "Price mismatch");
+
+        // Mark as sold immediately to prevent races
+        let seller = listing.seller;
+        listing.status = ListingStatus::Sold;
+
+        // Perform transfer: this will finalize sale and credit balances
+        let ticket = self.get_ticket(&ticket_id).await;
+        assert_eq!(ticket.owner, seller, "Seller no longer owns ticket");
+
+        self.transfer(ticket, seller, buyer, Some(price)).await;
     }
 }

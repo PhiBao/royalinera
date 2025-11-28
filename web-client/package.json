@@ -1,0 +1,19 @@
+{
+  "name": "web-client",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:conway": "bash ../scripts/dev-conway.sh",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^7.2.4"
+  },
+  "dependencies": {
+    "@linera/client": "^0.15.6",
+    "ethers": "^6.15.0"
+  }
+}

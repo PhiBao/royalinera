@@ -1,24 +1,26 @@
 [package]
 name = "ticketing"
 version = "0.1.0"
-authors = ["Linera <contact@linera.io>"]
 edition = "2021"
+resolver = "2"
 
 [features]
-test = []
+# Enables better panic messages in wasm (browser-only demos).
+console_panic = ["console_error_panic_hook"]
 
 [dependencies]
-async-graphql.workspace = true
-base64.workspace = true
-bcs.workspace = true
-linera-sdk.workspace = true
-serde.workspace = true
-sha3.workspace = true
+async-graphql = "7.0.17"
+base64 = "0.22.0"
+bcs = "0.1.6"
+linera-sdk = { path = "linera-protocol/linera-sdk" }
+serde = { version = "1.0", features = ["derive"] }
+sha3 = "0.10.8"
+console_error_panic_hook = { version = "0.1.7", optional = true }
 
-[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-ticketing = { workspace = true, features = ["test"] }
-linera-sdk = { workspace = true, features = ["test", "wasmer"] }
-tokio.workspace = true
+[dev-dependencies]
+assert_matches = "1.5.0"
+linera-sdk = { path = "linera-protocol/linera-sdk", features = ["test", "wasmer"] }
+tokio = { version = "1", features = ["rt", "sync"] }
 
 [[bin]]
 name = "ticketing_contract"

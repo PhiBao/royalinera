@@ -1,0 +1,49 @@
+# Node
+node_modules/
+
+# Environment
+.env
+.env.*
+
+# Rust / Cargo
+/target/
+**/target/
+
+# Build artifacts
+/*.wasm
+/**/*.wasm
+
+# Frontend
+/web-frontend-static/node_modules/
+/web-frontend-static/dist/
+/web-frontend-static/.vite/
+/web-frontend-static/build/
+/web-frontend-static/.cache/
+
+# linera/IDE
+.linera/
+linera.toml.lock
+
+# Editor/IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Misc
+.coverage
+coverage/
+.nyc_output/
+
+# Ignore local cargo config
+.cargo/
+
+# Ignore generated TypeScript/JS typings for wasm
+web/public/js/@linera/**/linera_web_bg.wasm.d.ts

@@ -1,7 +1,0 @@
-[project]
-name = "ticketing"
-
-[[application]]
-name = "ticketing"
-contract = "/home/kiter/linera/examples/target/wasm32-unknown-unknown/release/ticketing_contract.wasm"
-service = "/home/kiter/linera/examples/target/wasm32-unknown-unknown/release/ticketing_service.wasm"

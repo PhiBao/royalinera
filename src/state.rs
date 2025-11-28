@@ -15,6 +15,8 @@ use ticketing::{BalanceEntry, Event, EventId, Ticket, TicketId};
 pub struct TicketingState {
     pub events: MapView<EventId, Event>,
     pub tickets: MapView<TicketId, Ticket>,
+    /// Marketplace listings keyed by ticket id.
+    pub listings: MapView<TicketId, ticketing::Listing>,
     pub owned_ticket_ids: MapView<AccountOwner, BTreeSet<TicketId>>,
     pub royalty_balances: MapView<AccountOwner, BalanceEntry>,
     pub total_royalties: RegisterView<u128>,

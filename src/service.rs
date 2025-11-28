@@ -18,6 +18,7 @@ use linera_sdk::{
     Service, ServiceRuntime,
 };
 use ticketing::{EventId, Operation, TicketId, TicketOutput, TicketingAbi};
+use ticketing::ListingStatus;
 
 use self::state::TicketingState;
 
@@ -30,6 +31,14 @@ linera_sdk::service!(TicketingService);
 
 impl WithServiceAbi for TicketingService {
     type Abi = TicketingAbi;
+}
+
+#[derive(async_graphql::SimpleObject, Clone, serde::Serialize)]
+struct ListingInfo {
+    ticket_id: String,
+    seller: linera_sdk::linera_base_types::AccountOwner,
+    price: String,
+    status: String,
 }
 
 impl Service for TicketingService {
@@ -116,6 +125,34 @@ impl QueryRoot {
             .await
             .unwrap();
         tickets
+    }
+
+    async fn listings(&self) -> BTreeMap<String, ListingInfo> {
+        let mut map = BTreeMap::new();
+        self.state
+            .listings
+            .for_each_index_value(|ticket_id, listing| {
+                let listing = listing.into_owned();
+                let ticket_key = STANDARD_NO_PAD.encode(ticket_id.id.clone());
+                let status = match listing.status {
+                    ListingStatus::Active => "Active".to_string(),
+                    ListingStatus::Cancelled => "Cancelled".to_string(),
+                    ListingStatus::Sold => "Sold".to_string(),
+                };
+                map.insert(
+                    ticket_key.clone(),
+                    ListingInfo {
+                        ticket_id: ticket_key,
+                        seller: listing.seller,
+                        price: listing.price.to_string(),
+                        status,
+                    },
+                );
+                Ok(())
+            })
+            .await
+            .unwrap();
+        map
     }
 
     async fn owned_ticket_ids(&self, owner: AccountOwner) -> BTreeSet<String> {
@@ -216,6 +253,42 @@ impl MutationRoot {
             ticket_id: decode_ticket_id(&ticket_id),
             buyer_account,
             sale_price,
+        };
+        self.runtime.schedule_operation(&operation);
+        []
+    }
+
+    async fn create_listing(
+        &self,
+        seller: AccountOwner,
+        ticket_id: String,
+        price: String,
+    ) -> [u8; 0] {
+        let price = price.parse::<u128>().ok();
+        let operation = Operation::CreateListing {
+            seller,
+            ticket_id: decode_ticket_id(&ticket_id),
+            price: price.unwrap_or(0),
+        };
+        self.runtime.schedule_operation(&operation);
+        []
+    }
+
+    async fn cancel_listing(&self, seller: AccountOwner, ticket_id: String) -> [u8; 0] {
+        let operation = Operation::CancelListing {
+            seller,
+            ticket_id: decode_ticket_id(&ticket_id),
+        };
+        self.runtime.schedule_operation(&operation);
+        []
+    }
+
+    async fn buy_listing(&self, buyer: Account, ticket_id: String, price: String) -> [u8; 0] {
+        let price = price.parse::<u128>().ok();
+        let operation = Operation::BuyListing {
+            buyer,
+            ticket_id: decode_ticket_id(&ticket_id),
+            price: price.unwrap_or(0),
         };
         self.runtime.schedule_operation(&operation);
         []

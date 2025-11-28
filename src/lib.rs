@@ -81,6 +81,23 @@ pub enum Operation {
         target_account: Account,
         sale_price: Option<u128>,
     },
+    /// Create a marketplace listing for a ticket owned by the caller.
+    CreateListing {
+        seller: AccountOwner,
+        ticket_id: TicketId,
+        price: u128,
+    },
+    /// Cancel an existing listing (only seller).
+    CancelListing {
+        seller: AccountOwner,
+        ticket_id: TicketId,
+    },
+    /// Buy an active listing.
+    BuyListing {
+        buyer: Account,
+        ticket_id: TicketId,
+        price: u128,
+    },
 }
 
 /// Cross-chain messages emitted by the ticketing contract.
@@ -131,6 +148,23 @@ pub struct Ticket {
     pub royalty_bps: u16,
     pub metadata_hash: DataBlobHash,
     pub last_sale_price: Option<u128>,
+}
+
+/// Marketplace listing for a ticket.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Listing {
+    pub ticket_id: TicketId,
+    pub seller: AccountOwner,
+    pub price: u128,
+    pub status: ListingStatus,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub enum ListingStatus {
+    Active,
+    Cancelled,
+    Sold,
 }
 
 /// Human-friendly output of a ticket (with payload bytes).
