@@ -4,14 +4,19 @@ node_modules/
 # Environment
 .env
 .env.*
+.env.local
 
 # Rust / Cargo
 /target/
 **/target/
+Cargo.lock
 
 # Build artifacts
 /*.wasm
 /**/*.wasm
+*.so
+*.o
+*.a
 
 # Frontend
 /web-frontend-static/node_modules/
@@ -19,9 +24,14 @@ node_modules/
 /web-frontend-static/.vite/
 /web-frontend-static/build/
 /web-frontend-static/.cache/
+/web-client/node_modules/
+/web-client/dist/
+/web-client/build/
+/web-client/.env.local
 
 # linera/IDE
 .linera/
+.linera-*/
 linera.toml.lock
 
 # Editor/IDE
@@ -37,6 +47,13 @@ Thumbs.db
 # Logs
 *.log
 
+# Backup files
+*.bak
+*.backup
+*.old
+*.tmp
+*~
+
 # Misc
 .coverage
 coverage/
@@ -47,3 +64,10 @@ coverage/
 
 # Ignore generated TypeScript/JS typings for wasm
 web/public/js/@linera/**/linera_web_bg.wasm.d.ts
+
+# Old/backup directories
+linera-protocol/
+
+# Temp C files
+timeshift.c
+timeshift.so

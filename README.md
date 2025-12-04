@@ -1,145 +1,158 @@
-# Linera Ticketing (Microchain Demo)
+# Royalinera - NFT Ticketing Platform
 
-A lightweight, fully on-chain ticketing flow built on Linera Protocol. It pairs a royalty-aware marketplace contract (`src/`) with a zero-build static front-end (`web-frontend-static/`) that talks to the service's GraphQL API.
+A fully on-chain ticketing system built on Linera Protocol with royalty-aware marketplace, NFT tickets, and cross-chain transfers.
 
-## What lives where
-- `src/lib.rs` – ABI definitions (events, tickets, listings, royalty accounting).
-- `src/contract.rs` – contract logic: create events, mint tickets, transfer/claim cross-chain, royalty splits, and marketplace listings.
-- `src/service.rs` – GraphQL service for queries/mutations (events, tickets, listings, owned ids, royalty balances).
-- `web-frontend-static/` – HTML/CSS/JS UI with the Events / Marketplace / My Tickets / Connect Wallet menu.
+## Project Structure
+- `src/lib.rs` – ABI definitions (events, tickets, listings, royalty accounting)
+- `src/contract.rs` – Contract logic: create events, mint tickets, transfer/claim cross-chain, royalty splits, and marketplace
+- `src/service.rs` – GraphQL service for queries/mutations
+- `src/state.rs` – Application state management
+- `web-client/` – React + Vite frontend with responsive design
 
-## Running the contract on Linera (local single-validator demo)
-The steps mirror the official examples (see `linera-protocol/examples/*/README.md`).
+## Features
 
-0) Prereqs
+- ✅ **Event Creation** with customizable royalty system (0-25%)
+- ✅ **NFT Ticket Minting** with metadata and blob storage
+- ✅ **Cross-Chain Transfers** using Linera's microchain architecture
+- ✅ **On-Chain Marketplace** (list, buy, cancel with atomic transactions)
+- ✅ **Automatic Royalty Distribution** to event organizers
+- ✅ **GraphQL API** for all operations
+- ✅ **Modern React Frontend** with responsive design
+- ✅ **Conway Testnet Deployment** with retry logic for production reliability
+
+## Quick Start (Conway Testnet)
+
+### Prerequisites
 - Rust stable with `wasm32-unknown-unknown` target: `rustup target add wasm32-unknown-unknown`
-- Build Linera CLI binaries: `cd linera-protocol && cargo build --release -p linera -p linera-service`
-- Put them on your PATH: `export PATH="$PWD/target/release:$PATH"` and source the helper: `eval "$(linera net helper 2>/dev/null)"`
+- Linera CLI installed: Follow [Linera installation guide](https://linera.dev/)
+- Node.js 18+ and npm (for frontend)
 
-1) Start a local network + faucet
+### Backend Deployment
+
+Use the automated deployment script with retry logic:
+
 ```bash
-LINERA_FAUCET_PORT=8079
-LINERA_FAUCET_URL=http://localhost:$LINERA_FAUCET_PORT
-LINERA_TMP_DIR=$(mktemp -d)
-linera_spawn linera net up --with-faucet --faucet-port $LINERA_FAUCET_PORT
+# Deploy to Conway testnet
+bash scripts/dev-conway.sh
 ```
 
-2) Init wallet and request two chains (seller/buyer)
-```bash
-export LINERA_WALLET="$LINERA_TMP_DIR/wallet.json"
-export LINERA_KEYSTORE="$LINERA_TMP_DIR/keystore.json"
-export LINERA_STORAGE="rocksdb:$LINERA_TMP_DIR/client.db"
+This script will:
+1. Set up Conway network configuration
+2. Initialize wallet and request a chain
+3. Build WASM binaries
+4. Publish module and create application (with automatic retries)
+5. Start the GraphQL service on port 8085
 
-linera wallet init --faucet $LINERA_FAUCET_URL
-INFO_1=($(linera wallet request-chain --faucet $LINERA_FAUCET_URL))
-INFO_2=($(linera wallet request-chain --faucet $LINERA_FAUCET_URL))
-CHAIN_1="${INFO_1[0]}"; OWNER_1="${INFO_1[1]}"
-CHAIN_2="${INFO_2[0]}"; OWNER_2="${INFO_2[1]}"
-```
+### Frontend Setup
 
-3) Build Wasm artifacts (contract + service)
-```bash
-cargo build --release --target wasm32-unknown-unknown
-```
-Artifacts land at `target/wasm32-unknown-unknown/release/ticketing_{contract,service}.wasm`.
-
-4) Publish module and create the application
-```bash
-MODULE_ID="$(linera publish-module \
-  target/wasm32-unknown-unknown/release/ticketing_contract.wasm \
-  target/wasm32-unknown-unknown/release/ticketing_service.wasm)"
-
-APP_ID="$(linera create-application $MODULE_ID --json-argument '{}')"
-echo "Application ID: $APP_ID"
-```
-
-5) Run the GraphQL service for your wallet
-```bash
-SERVICE_PORT=8080
-linera service --port $SERVICE_PORT --with-admin-ui &
-GRAPHQL_URL="http://localhost:$SERVICE_PORT/chains/$CHAIN_1/applications/$APP_ID"
-echo "GraphQL: $GRAPHQL_URL"
-```
-
-## Using the static UI
-1. Serve `web-frontend-static`:
-```bash
-cd web-frontend-static
-python -m http.server 4173
-```
-2. Open the printed URL (http://localhost:4173).
-3. Set the GraphQL service URL to `$GRAPHQL_URL` from step 5.
-4. Paste your `AccountOwner` (`OWNER_1` or `OWNER_2`) into Connect Wallet.
-5. Use Events / Marketplace / My Tickets; confirm operations via your wallet/CLI.
-
-## Using the Vite Web Client (in-browser signer)
-`web-client/` is a Vite app that uses `@linera/client` and ethers to faucet a wallet on Conway, claim a chain, and call the ticketing app directly (no local `linera service`). Steps:
 ```bash
 cd web-client
-npm install          # already done in repo, rerun if needed
-npm run dev -- --host --port 4173
+npm install
+npm run dev
 ```
-Then open the URL, click Connect (optionally paste a private key; otherwise a random one is created), and the app will faucet a wallet on Conway, claim a chain, and use the ticketing app id set in the UI.
 
-## Testnet / mainnet
-Swap steps 1–2 with the network bootstrap of your environment (validator endpoints, wallet restored from keystore), then reuse steps 3–5 with the appropriate faucet/application ids. See https://linera.dev/ for environment-specific flags.
+Open http://localhost:5173 and connect with your wallet to start using the app.
 
-### Conway testnet (no local validator)
-- Faucet: `https://faucet.testnet-conway.linera.net/`
-- Download network config (used by CLI/service):
-  ```bash
-  LINERA_TMP_DIR=$(mktemp -d)
-  curl -sS https://faucet.testnet-conway.linera.net/network.json -o $LINERA_TMP_DIR/network.json
-  export LINERA_NETWORK=$LINERA_TMP_DIR/network.json
-  export LINERA_FAUCET_URL=https://faucet.testnet-conway.linera.net/
-  export LINERA_WALLET="$LINERA_TMP_DIR/wallet.json"
-  export LINERA_KEYSTORE="$LINERA_TMP_DIR/keystore.json"
-  export LINERA_STORAGE="rocksdb:$LINERA_TMP_DIR/client.db"
-  ```
-- Initialize wallet + request a chain:
-  ```bash
-  linera wallet init --faucet $LINERA_FAUCET_URL --network $LINERA_NETWORK
-  INFO=($(linera wallet request-chain --faucet $LINERA_FAUCET_URL --network $LINERA_NETWORK))
-  CHAIN_ID="${INFO[0]}"; OWNER_ID="${INFO[1]}"
-  ```
-- Build Wasm (same as above), publish module, and create application on the testnet:
-  ```bash
-  cargo build --release --target wasm32-unknown-unknown
-  MODULE_ID="$(linera publish-module \
-    target/wasm32-unknown-unknown/release/ticketing_contract.wasm \
-    target/wasm32-unknown-unknown/release/ticketing_service.wasm \
-    --network $LINERA_NETWORK)"
-  APP_ID="$(linera create-application $MODULE_ID --json-argument '{}' --network $LINERA_NETWORK)"
-  ```
-- Run the wallet-bound GraphQL service against Conway:
-  ```bash
-  SERVICE_PORT=8080
-  linera service --port $SERVICE_PORT --network $LINERA_NETWORK --with-admin-ui &
-  GRAPHQL_URL="http://localhost:$SERVICE_PORT/chains/$CHAIN_ID/applications/$APP_ID"
-  echo "Use this in the UI: $GRAPHQL_URL"
-  ```
-- Open the static UI (http://localhost:4173 if using `python -m http.server 4173`) and set the GraphQL URL. Use `OWNER_ID` in Connect Wallet. All ops are signed by your wallet and broadcast to Conway.
+## Local Development
 
-#### Optional: use the Linera Web client library
-If you prefer in-browser signing instead of CLI, add `@linera/client` to a bundled front-end and create a signer (e.g., WebAuthn). The static HTML here is build-less, so you would need a small Vite/webpack wrapper:
+For local testing with single-validator network:
+
 ```bash
-pnpm add @linera/client
-```
-```ts
-import { Client, WebAuthnSigner } from "@linera/client";
-const signer = await WebAuthnSigner.create("ticketing-demo");
-const client = await Client.create({ network: LINERA_NETWORK, signer });
-// use client.executeOperation(...) with your app id
-```
-Reuse `network.json` and `APP_ID` from the steps above. This keeps keys in the browser and still talks to Conway testnet.
+# Terminal 1: Start local network
+linera net up --with-faucet
 
-## Using the static UI
-1. Serve `web-frontend-static` (e.g., `cd web-frontend-static && python -m http.server 4173`).
-2. Set the GraphQL service URL in the header, then paste your `AccountOwner` to "Connect Wallet".
-3. Use **Events** to create/mint, **Marketplace** to list/buy/cancel, and **My Tickets** to transfer or claim across chains.
-4. All mutations are forwarded to the GraphQL service; signing/permissions stay with your Linera wallet.
+# Terminal 2: Deploy application
+cargo build --release --target wasm32-unknown-unknown
+linera publish-module target/wasm32-unknown-unknown/release/ticketing_contract.wasm \
+  target/wasm32-unknown-unknown/release/ticketing_service.wasm
 
-## Design goals
-- Showcase real-time microchains: instant transfers, cross-chain claims, and royalty payouts.
-- Keep ownership on-chain: organizer-only minting, seller-only listing/cancel, authenticated transfers.
-- Minimal stack: pure Rust on-chain logic + static client, no bundler required.
+# Terminal 3: Run frontend
+cd web-client && npm run dev
+```
+
+## How It Works
+
+### Smart Contract Architecture
+The contract uses Linera's microchain architecture for:
+- **Instant finality**: Transactions complete in milliseconds
+- **Cross-chain messaging**: Transfer tickets between chains atomically
+- **Event-driven design**: Subscribe to ticket transfers, marketplace events, and royalty payments
+- **State isolation**: Each user can have their own microchain for privacy
+
+### Key Operations
+
+1. **Create Event** (Organizer only)
+   - Set ticket supply, price, royalty percentage
+   - Metadata stored on-chain
+   - Automatic NFT ID generation
+
+2. **Mint Ticket** (Anyone)
+   - Pay event price
+   - Receive unique NFT ticket ID
+   - Instant ownership verification
+
+3. **Transfer Ticket** (Cross-chain)
+   - Send ticket to any Linera account
+   - Automatic state update on both chains
+   - Maintains ownership history
+
+4. **List on Marketplace** (Ticket owner)
+   - Set asking price
+   - Atomic listing creation
+   - Cancel anytime before sale
+
+5. **Buy from Marketplace** (Anyone)
+   - Instant purchase
+   - Automatic royalty distribution to organizer
+   - Atomic ownership transfer
+
+## Testing
+
+Multi-account marketplace testing via CLI:
+```bash
+# Simulate different users buying/selling
+bash scripts/simulate-buyer.sh
+```
+
+## Architecture Decisions
+
+### Why Single-Service Mode?
+The current frontend connects to one GraphQL service (single wallet). This demonstrates all features but limits multi-user marketplace testing in the browser. 
+
+**For Production**: Implement wallet connection (MetaMask, WalletConnect) so each user signs with their own keys. See future roadmap in [CHANGELOG.md](./CHANGELOG.md).
+
+## Team
+
+- **Project**: Royalinera - Decentralized NFT Ticketing Platform
+- **Developer**: PhiBao
+- **Discord**: kiter99
+- **Wallet Address**: `0x86E95581E41946ED84956433a8a9c836bCbA636c`
+- **GitHub**: https://github.com/PhiBao/
+- **Submission**: Linera Wave 4
+
+### Deployed Application
+- **Network**: Conway Testnet
+- **Application ID**: `d60f9a84ab1844cd8acb2133adcba33e7aa065e9c5b05179917d7ba4021395bf`
+- **Service URL**: http://localhost:8085 (when running locally)
+- **Chain ID**: `359b32bf632e6724a2ca41fb446017dbf834edd31073d8d61b7d66f9560c87aa`
+
+### Documentation
+- [CHANGELOG.md](./CHANGELOG.md) - Complete feature list and version history
+
+## Linera SDK Features Used
+
+This project demonstrates several Linera SDK capabilities:
+
+1. **Microchain Architecture**: Each user can have their own chain for ticket management
+2. **Cross-Chain Messaging**: Tickets can be transferred atomically between chains
+3. **GraphQL Service**: Automatic API generation from contract state
+4. **Blob Storage**: Event metadata and ticket images stored efficiently
+5. **Event System**: Subscribe to transfers, purchases, and royalty distributions
+6. **Owner-Based Permissions**: Only ticket owners can list/transfer, only organizers can mint
+7. **Atomic State Updates**: Marketplace operations are all-or-nothing
+
+## Known Limitations
+
+- **Single-Account Demo**: Current frontend uses one wallet for simplicity
+- **CLI Required for Multi-User Testing**: Use provided scripts to simulate multiple buyers
+- **Future Enhancement**: Multi-wallet browser support (see CHANGELOG for roadmap)
