@@ -1,4 +1,4 @@
-# Royalinera - NFT Ticketing Platform
+# Ticketh - NFT Ticketing Platform
 
 A fully on-chain ticketing system built on Linera Protocol with royalty-aware marketplace, NFT tickets, and cross-chain transfers.
 
@@ -123,7 +123,7 @@ The current frontend connects to one GraphQL service (single wallet). This demon
 
 ## Team
 
-- **Project**: Royalinera - Decentralized NFT Ticketing Platform
+- **Project**: Ticketh - Decentralized NFT Ticketing Platform
 - **Developer**: PhiBao
 - **Discord**: kiter99
 - **Wallet Address**: `0x86E95581E41946ED84956433a8a9c836bCbA636c`
@@ -133,7 +133,7 @@ The current frontend connects to one GraphQL service (single wallet). This demon
 ### Deployed Application
 - **Network**: Conway Testnet
 - **Application ID**: `65f6519282173b0e03e79e2917fdcf358823487c416253d8f8842790f120ad2f`
-- **Service URL**: https://royalinera.vercel.app/
+- **Service URL**: https://Ticketh.vercel.app/
 - **Chain ID**: `cee119769a3a330cec7d18ee4042d3f65d9ecb365be5eeb6b32d2510504a01b3`
 
 ### Documentation

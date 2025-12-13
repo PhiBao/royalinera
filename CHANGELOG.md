@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to the Royalinera ticketing dApp will be documented in this file.
+All notable changes to the Ticketh ticketing dApp will be documented in this file.
 
 ## [Wave 4] - 2025-12-04
 

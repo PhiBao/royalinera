@@ -7,7 +7,7 @@ APP_ID="d60f9a84ab1844cd8acb2133adcba33e7aa065e9c5b05179917d7ba4021395bf"
 OWNER_ID="0xd076593ce080dedf0cddb4afe5b4c2c9d8058dc7c3004d3b623fcfa8931cdd26"
 SERVICE_URL="http://localhost:8085/chains/$CHAIN_ID/applications/$APP_ID"
 
-echo "🎫 Royalinera Marketplace Test Script"
+echo "🎫 Ticketh Marketplace Test Script"
 echo "======================================"
 echo ""
 

@@ -3,7 +3,7 @@
 
 set -e
 
-echo "🔍 Royalinera Pre-Push Checklist"
+echo "🔍 Ticketh Pre-Push Checklist"
 echo "================================="
 echo ""
 
