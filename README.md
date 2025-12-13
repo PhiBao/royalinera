@@ -133,7 +133,7 @@ The current frontend connects to one GraphQL service (single wallet). This demon
 ### Deployed Application
 - **Network**: Conway Testnet
 - **Application ID**: `65f6519282173b0e03e79e2917fdcf358823487c416253d8f8842790f120ad2f`
-- **Service URL**: https://Ticketh.vercel.app/
+- **Service URL**: http://localhost:8085 (local run)
 - **Chain ID**: `cee119769a3a330cec7d18ee4042d3f65d9ecb365be5eeb6b32d2510504a01b3`
 
 ### Documentation

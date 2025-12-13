@@ -87,26 +87,65 @@ All notable changes to the Ticketh ticketing dApp will be documented in this fil
 
 ---
 
-## [Planned for Wave 5]
+## [Planned for Wave 5] - Focus: User Experience
 
-### Planned Features
-- MetaMask wallet integration for multi-user support
-- Enhanced ticket metadata (images, descriptions)
-- Event search and filtering
-- Ticket transfer history
-- QR code generation for tickets
-- Event organizer dashboard
-- Secondary market analytics
-- Ticket bundle sales
-- Time-limited listings
+### Core Features (Week 1)
+- **MetaMask Wallet Integration**
+  - Multi-user account switching
+  - Connect/disconnect wallet UI
+  - Account balance display
+- **Enhanced Ticket Metadata**
+  - Image upload and display
+  - Rich text descriptions
+  - Venue information and maps
+- **Event Discovery**
+  - Search by event name
+  - Filter by date, price, availability
+  - Sort by popularity/date
+- **Ticket History**
+  - View all past transfers
+  - Transaction timeline
+  - Ownership provenance
 
 ### Technical Improvements
-- IndexedDB wallet persistence
+- IndexedDB for wallet persistence
+- Image optimization and CDN integration
+- Responsive mobile design improvements
+- Frontend deployment to Vercel
+
+---
+
+## [Planned for Wave 6] - Focus: Advanced Features
+
+### Organizer Tools (Week 2)
+- **Event Organizer Dashboard**
+  - Total sales and revenue metrics
+  - Active/sold ticket counts
+  - Royalty earnings breakdown
+- **QR Code System**
+  - Generate QR codes for tickets
+  - Ticket validation scanner
+  - Check-in tracking
+- **Secondary Market Analytics**
+  - Price history charts
+  - Volume tracking
+  - Top sellers/buyers
+
+### Advanced Marketplace
+- **Time-Limited Listings**
+  - Expiration timestamps
+  - Auto-cancel expired listings
+  - Countdown timers in UI
+- **Ticket Bundles**
+  - Multi-ticket packages
+  - Group discounts
+  - VIP tier support
+
+### Technical Improvements
 - WebSocket subscriptions for real-time updates
 - Optimistic UI updates
-- Better error recovery
-- Performance optimizations
-- Frontend deployment to Vercel/Netlify
+- Advanced caching strategies
+- Performance monitoring
 
 ---
 
