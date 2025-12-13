@@ -2,7 +2,7 @@
 
 All notable changes to the Royalinera ticketing dApp will be documented in this file.
 
-## [Wave 1] - 2025-12-04
+## [Wave 4] - 2025-12-04
 
 ### Added
 - **Core Ticketing Contract**
@@ -87,7 +87,7 @@ All notable changes to the Royalinera ticketing dApp will be documented in this 
 
 ---
 
-## [Planned for Wave 2]
+## [Planned for Wave 5]
 
 ### Planned Features
 - MetaMask wallet integration for multi-user support

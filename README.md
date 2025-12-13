@@ -132,9 +132,9 @@ The current frontend connects to one GraphQL service (single wallet). This demon
 
 ### Deployed Application
 - **Network**: Conway Testnet
-- **Application ID**: `d60f9a84ab1844cd8acb2133adcba33e7aa065e9c5b05179917d7ba4021395bf`
-- **Service URL**: http://localhost:8085 (when running locally)
-- **Chain ID**: `359b32bf632e6724a2ca41fb446017dbf834edd31073d8d61b7d66f9560c87aa`
+- **Application ID**: `65f6519282173b0e03e79e2917fdcf358823487c416253d8f8842790f120ad2f`
+- **Service URL**: https://royalinera.vercel.app/
+- **Chain ID**: `cee119769a3a330cec7d18ee4042d3f65d9ecb365be5eeb6b32d2510504a01b3`
 
 ### Documentation
 - [CHANGELOG.md](./CHANGELOG.md) - Complete feature list and version history
