@@ -1,33 +1,84 @@
 import React, { useState, useEffect } from 'react';
 import toast from 'react-hot-toast';
-import { useLinera } from '../contexts/LineraContext';
-import { ShoppingBag, Tag } from 'lucide-react';
+import { useWallet } from '../contexts/WalletContext';
+import { ShoppingBag, Tag, Search, SortAsc, Filter, Wallet } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 const Marketplace = () => {
-    const { request, owner, chainId, loading: ctxLoading } = useLinera();
+    const { request, chainId, isConnected, isConnecting, openWalletModal } = useWallet();
     const [listings, setListings] = useState([]);
+    const [filteredListings, setFilteredListings] = useState([]);
     const [loading, setLoading] = useState(true);
+    
+    // Search and filter
+    const [searchQuery, setSearchQuery] = useState('');
+    const [sortBy, setSortBy] = useState('price-low'); // 'price-low', 'price-high', 'recent'
+    const [hideOwn, setHideOwn] = useState(true);
 
     const fetchListings = async () => {
         try {
+            console.log('Fetching marketplace listings...');
             const data = await request(`query { listings }`);
-            // listings is a Map<String, ListingInfo> - filter only Active status
-            const allListings = Object.values(data.listings || {});
-            setListings(allListings.filter(l => l.status === "Active"));
+            console.log('Listings data received:', data);
+            const allListings = Object.values(data?.listings || {});
+            const activeListings = allListings.filter(l => l.status === "Active");
+            console.log('Active listings:', activeListings);
+            setListings(activeListings);
+            setFilteredListings(activeListings);
         } catch (err) {
-            console.error("Failed to fetch listings", err);
+            console.error("Failed to fetch listings:", err);
+            toast.error(`Failed to load marketplace: ${err.message}`);
+            setListings([]);
+            setFilteredListings([]);
         } finally {
             setLoading(false);
         }
     };
 
     useEffect(() => {
-        if (!ctxLoading) fetchListings();
-    }, [ctxLoading]);
+        if (isConnected && !isConnecting) {
+            fetchListings();
+        } else if (!isConnecting) {
+            setLoading(false);
+        }
+    }, [isConnected, isConnecting]);
+
+    // Filter and sort
+    useEffect(() => {
+        let result = [...listings];
+
+        // Search filter
+        if (searchQuery) {
+            const query = searchQuery.toLowerCase();
+            result = result.filter(listing =>
+                listing.ticket_id?.toLowerCase().includes(query) ||
+                listing.sellerChain?.toLowerCase().includes(query)
+            );
+        }
+
+        // Hide own listings
+        if (hideOwn && chainId) {
+            result = result.filter(listing => listing.sellerChain !== chainId);
+        }
+
+        // Sort
+        result.sort((a, b) => {
+            const priceA = parseFloat(a.price) || 0;
+            const priceB = parseFloat(b.price) || 0;
+            switch (sortBy) {
+                case 'price-high':
+                    return priceB - priceA;
+                case 'price-low':
+                default:
+                    return priceA - priceB;
+            }
+        });
+
+        setFilteredListings(result);
+    }, [listings, searchQuery, sortBy, hideOwn, chainId]);
 
     const handleBuy = async (ticketId, price) => {
-        if (!owner) {
+        if (!chainId) {
             toast.error("Please connect your wallet first");
             return;
         }
@@ -37,7 +88,6 @@ const Marketplace = () => {
                 request(`
         mutation {
           buyListing(
-            buyer: { chainId: "${chainId}", owner: "${owner}" }
             ticketId: "${ticketId}"
             price: "${price}"
           )
@@ -55,20 +105,105 @@ const Marketplace = () => {
         }
     };
 
-    if (loading) return <div className="text-center py-20">Loading marketplace...</div>;
+    if (!isConnected) {
+        return (
+            <>
+                <div className="flex flex-col items-center justify-center min-h-[60vh]">
+                    <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="text-center max-w-md mx-auto"
+                    >
+                        <div className="w-20 h-20 bg-gradient-to-br from-accent-primary to-purple-500 rounded-full flex items-center justify-center mx-auto mb-6">
+                            <Wallet size={40} className="text-white" />
+                        </div>
+                        <h2 className="text-3xl font-bold mb-4">Connect Your Wallet</h2>
+                        <p className="text-text-secondary mb-8 leading-relaxed">
+                            Connect your wallet to browse and purchase tickets from the marketplace.
+                        </p>
+                        <button
+                            onClick={openWalletModal}
+                            className="btn btn-primary text-lg px-8 py-4"
+                        >
+                            <Wallet size={20} />
+                            Connect Wallet
+                        </button>
+                    </motion.div>
+                </div>
+            </>
+        );
+    }
+
+    if (loading) {
+        return (
+            <div className="flex flex-col items-center justify-center py-20">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-accent-primary mb-4"></div>
+                <p className="text-text-secondary">Loading marketplace...</p>
+            </div>
+        );
+    }
 
     return (
         <div>
-            <div className="text-center mb-12">
+            <div className="text-center mb-8">
                 <h1>Marketplace</h1>
                 <p className="text-text-secondary">Buy and sell tickets securely.</p>
             </div>
 
+            {/* Search and Filter */}
+            <div className="card mb-6">
+                <div className="flex flex-col md:flex-row gap-4">
+                    {/* Search */}
+                    <div className="flex-1 relative">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-text-secondary" size={18} />
+                        <input
+                            type="text"
+                            placeholder="Search by ticket ID or seller..."
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            className="w-full pl-10 pr-4 py-2 bg-bg-primary border border-white/10 rounded-lg focus:border-accent-primary/50 transition-colors"
+                        />
+                    </div>
+
+                    {/* Sort */}
+                    <div className="flex items-center gap-2">
+                        <SortAsc size={18} className="text-text-secondary" />
+                        <select
+                            value={sortBy}
+                            onChange={(e) => setSortBy(e.target.value)}
+                            className="bg-bg-primary border border-white/10 rounded-lg px-3 py-2 text-sm"
+                        >
+                            <option value="price-low">Price: Low to High</option>
+                            <option value="price-high">Price: High to Low</option>
+                        </select>
+                    </div>
+
+                    {/* Hide own */}
+                    <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                            type="checkbox"
+                            checked={hideOwn}
+                            onChange={(e) => setHideOwn(e.target.checked)}
+                            className="w-4 h-4 accent-accent-primary"
+                        />
+                        <span className="text-sm text-text-secondary">Hide my listings</span>
+                    </label>
+                </div>
+
+                <div className="mt-3 text-sm text-text-secondary">
+                    {filteredListings.length} listing{filteredListings.length !== 1 ? 's' : ''} available
+                </div>
+            </div>
+
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {listings.length === 0 ? (
-                    <p className="text-text-secondary col-span-full text-center py-10">No active listings found.</p>
+                {filteredListings.length === 0 ? (
+                    <p className="text-text-secondary col-span-full text-center py-10">
+                        {listings.length === 0 
+                            ? "No active listings found."
+                            : "No listings match your search criteria."}
+                    </p>
                 ) : (
-                    listings.map((listing) => (
+                    filteredListings.map((listing) => (
                         <motion.div
                             key={listing.ticket_id}
                             initial={{ opacity: 0, scale: 0.95 }}

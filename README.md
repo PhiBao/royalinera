@@ -1,6 +1,67 @@
 # Ticketh - NFT Ticketing Platform
 
-A fully on-chain ticketing system built on Linera Protocol with royalty-aware marketplace, NFT tickets, and cross-chain transfers.
+A fully on-chain ticketing system built on **Linera Protocol** using the **Linera SDK** with royalty-aware marketplace, NFT tickets, and cross-chain transfers. **Deployed and tested on Conway Testnet.**
+
+## 🔗 Linera SDK Integration
+
+This project is built entirely with the Linera SDK:
+
+### Smart Contract (Rust)
+```rust
+// src/contract.rs - Uses linera_sdk Contract trait
+use linera_sdk::{Contract, ContractRuntime, views::{RootView, View}};
+
+impl Contract for TicketingContract {
+    type Message = Message;
+    async fn execute_operation(&mut self, operation: Operation) -> Self::Response { ... }
+}
+```
+
+### Frontend (JavaScript) - @linera/client Web SDK
+```javascript
+// web-client/src/contexts/WalletContext.jsx - Connects to Conway Testnet
+import * as linera from '@linera/client';
+import { PrivateKey } from '@linera/signer';
+import { Wallet } from 'ethers';
+
+// Generate or import wallet
+const wallet = Wallet.createRandom();
+const privateKey = PrivateKey.fromMnemonic(wallet.mnemonic.phrase);
+const ownerAddress = await privateKey.getOwner();
+
+// Connect to Conway Faucet
+const faucet = new linera.Faucet('https://faucet.testnet-conway.linera.net/');
+const chainId = await faucet.claimChain(ownerAddress);
+
+// Create Linera client for blockchain operations
+const client = new linera.Client(faucet, privateKey);
+
+// Execute GraphQL queries/mutations
+const makeRequest = async (chainId, appId, query) => {
+  const app = await client.openChain(chainId, appId);
+  return await app.query(query);
+};
+```
+
+**Key SDK Features Used:**
+- `linera_sdk::Contract` - Smart contract logic implementation
+- `linera_sdk::Service` - GraphQL API service
+- `linera_views` - Persistent state management (MapView, RegisterView)
+- `linera_base_types` - Account, ChainId, ApplicationId types
+- Cross-chain messaging via `call_application`
+- `@linera/client` - Web SDK for frontend blockchain interaction
+- `@linera/signer` - Wallet signing utilities
+
+## 🌐 Conway Testnet Deployment
+
+Connects to Conway Testnet via:
+- **Faucet**: `https://faucet.testnet-conway.linera.net/`
+- **Network Config**: Downloaded from `https://faucet.testnet-conway.linera.net/network.json`
+- **Deployment Script**: `scripts/dev-conway.sh` handles wallet init, module publish, and app creation
+
+**Latest Deployment:**
+- Chain ID: `cee119769a3a330cec7d18ee4042d3f65d9ecb365be5eeb6b32d2510504a01b3`
+- Application tested with all mutations working ✅
 
 ## Project Structure
 - `src/lib.rs` – ABI definitions (events, tickets, listings, royalty accounting)

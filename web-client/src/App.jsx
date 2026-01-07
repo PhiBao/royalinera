@@ -1,16 +1,22 @@
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
-import { LineraProvider } from './contexts/LineraContext';
+import { Toaster } from 'react-hot-toast';
+import { WalletProvider } from './providers/WalletProvider';
+import { GraphQLProvider } from './providers/GraphQLProvider';
 import Layout from './components/Layout';
+import WalletModal from './components/WalletModalNew';
+import { useWallet } from './providers/WalletProvider';
 import Home from './pages/Home';
-import Events from './pages/Events';
-import Mint from './pages/Mint';
-import Marketplace from './pages/Marketplace';
-import MyTickets from './pages/MyTickets';
+import Events from './pages/EventsNew';
+import Mint from './pages/MintNew';
+import Marketplace from './pages/MarketplaceNew';
+import MyTickets from './pages/MyTicketsNew';
 
-function App() {
+function AppContent() {
+  const { showWalletModal, closeWalletModal } = useWallet();
+  
   return (
-    <LineraProvider>
+    <>
       <Router>
         <Layout>
           <Routes>
@@ -22,7 +28,28 @@ function App() {
           </Routes>
         </Layout>
       </Router>
-    </LineraProvider>
+      <WalletModal isOpen={showWalletModal} onClose={closeWalletModal} />
+      <Toaster 
+        position="bottom-right"
+        toastOptions={{
+          style: {
+            background: '#1a1a2e',
+            color: '#fff',
+            border: '1px solid rgba(255,255,255,0.1)',
+          },
+        }}
+      />
+    </>
+  );
+}
+
+function App() {
+  return (
+    <WalletProvider>
+      <GraphQLProvider>
+        <AppContent />
+      </GraphQLProvider>
+    </WalletProvider>
   );
 }
 

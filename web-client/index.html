@@ -5,6 +5,15 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>web-client</title>
+    <script>
+      // Check crossOriginIsolated BEFORE any other code runs
+      console.log('=== CROSS-ORIGIN ISOLATION CHECK ===');
+      console.log('crossOriginIsolated:', self.crossOriginIsolated);
+      if (!self.crossOriginIsolated) {
+        console.error('WARNING: crossOriginIsolated is FALSE - SharedArrayBuffer will not work!');
+        console.error('Required headers: Cross-Origin-Opener-Policy: same-origin, Cross-Origin-Embedder-Policy: require-corp');
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

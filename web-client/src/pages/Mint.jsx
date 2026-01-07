@@ -1,18 +1,27 @@
 import React, { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { useLinera } from '../contexts/LineraContext';
-import { Ticket, CheckCircle } from 'lucide-react';
+import { useWallet } from '../contexts/WalletContext';
+import { Ticket, CheckCircle, AlertCircle, Image as ImageIcon, Wallet } from 'lucide-react';
+import { motion } from 'framer-motion';
 
 const Mint = () => {
-    const { request, owner, loading: ctxLoading } = useLinera();
+    const { request, isConnected, isConnecting, openWalletModal } = useWallet();
     const [searchParams] = useSearchParams();
     const [events, setEvents] = useState([]);
     const [selectedEvent, setSelectedEvent] = useState('');
     const [loading, setLoading] = useState(true);
+    const [ticketMetadata, setTicketMetadata] = useState({
+        description: '',
+        imageUrl: ''
+    });
 
     useEffect(() => {
         const fetchEvents = async () => {
+            if (!isConnected) {
+                setLoading(false);
+                return;
+            }
             try {
                 const data = await request(`query { events }`);
                 setEvents(Object.values(data.events || {}));
@@ -28,12 +37,12 @@ const Mint = () => {
                 setLoading(false);
             }
         };
-        if (!ctxLoading) fetchEvents();
-    }, [ctxLoading, searchParams]);
+        if (!isConnecting) fetchEvents();
+    }, [isConnected, isConnecting, searchParams]);
 
     const handleMint = async (e) => {
         e.preventDefault();
-        if (!owner) {
+        if (!isConnected) {
             toast.error("Please connect your wallet first");
             return;
         }
@@ -49,7 +58,6 @@ const Mint = () => {
                 request(`
         mutation {
           mintTicket(
-            organizer: "${owner}"
             eventId: "${eventId}"
             seat: "${seat}"
             blobHash: "${blobHash}"
@@ -64,10 +72,40 @@ const Mint = () => {
             );
             e.target.reset();
             setSelectedEvent('');
+            setTicketMetadata({ description: '', imageUrl: '' });
         } catch (err) {
             console.error(err);
         }
     };
+
+    if (!isConnected) {
+        return (
+            <>
+                <div className="flex flex-col items-center justify-center min-h-[60vh]">
+                    <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="text-center max-w-md mx-auto"
+                    >
+                        <div className="w-20 h-20 bg-gradient-to-br from-accent-primary to-purple-500 rounded-full flex items-center justify-center mx-auto mb-6">
+                            <Wallet size={40} className="text-white" />
+                        </div>
+                        <h2 className="text-3xl font-bold mb-4">Connect Your Wallet</h2>
+                        <p className="text-text-secondary mb-8 leading-relaxed">
+                            Connect your wallet to mint tickets for events.
+                        </p>
+                        <button
+                            onClick={openWalletModal}
+                            className="btn btn-primary text-lg px-8 py-4"
+                        >
+                            <Wallet size={20} />
+                            Connect Wallet
+                        </button>
+                    </motion.div>
+                </div>
+            </>
+        );
+    }
 
     return (
         <div className="max-w-2xl mx-auto">
@@ -87,11 +125,15 @@ const Mint = () => {
                             required
                         >
                             <option value="">-- Choose an event --</option>
-                            {events.map(e => (
-                                <option key={e.id.value} value={e.id.value}>
-                                    {e.name} ({e.mintedTickets}/{e.maxTickets} sold)
-                                </option>
-                            ))}
+                            {events.map(e => {
+                                const available = e.maxTickets - e.mintedTickets;
+                                const isSoldOut = available <= 0;
+                                return (
+                                    <option key={e.id.value} value={e.id.value} disabled={isSoldOut}>
+                                        {e.name} ({e.mintedTickets}/{e.maxTickets} sold) {isSoldOut ? '- SOLD OUT' : ''}
+                                    </option>
+                                );
+                            })}
                         </select>
                     </div>
 
@@ -100,16 +142,39 @@ const Mint = () => {
                         <input name="seat" placeholder="e.g. Section A, Row 5, Seat 12" required />
                     </div>
 
+                    {/* Enhanced Metadata Fields */}
                     <div className="input-group">
-                        <label>Organizer Account (You)</label>
-                        <input value={owner || 'Not connected'} disabled className="opacity-50" />
+                        <label className="flex items-center gap-2">
+                            <ImageIcon size={16} />
+                            Ticket Image URL (Optional)
+                        </label>
+                        <input 
+                            value={ticketMetadata.imageUrl}
+                            onChange={(e) => setTicketMetadata(prev => ({ ...prev, imageUrl: e.target.value }))}
+                            placeholder="https://example.com/ticket-image.jpg" 
+                        />
                         <p className="text-xs text-text-secondary mt-1">
-                            Note: Only the event organizer can mint tickets in this demo contract.
-                            Ensure you are using the same account that created the event.
+                            Add a cover image for your ticket (IPFS links recommended)
                         </p>
                     </div>
 
-                    <button type="submit" className="btn btn-primary w-full py-4 text-lg">
+                    <div className="input-group">
+                        <label>Additional Notes (Optional)</label>
+                        <textarea 
+                            value={ticketMetadata.description}
+                            onChange={(e) => setTicketMetadata(prev => ({ ...prev, description: e.target.value }))}
+                            placeholder="Special instructions, parking info, or notes for the ticket holder..."
+                            rows={3}
+                            className="w-full bg-bg-primary border border-white/10 rounded-lg p-3 focus:border-accent-primary/50 transition-colors resize-none"
+                        />
+                    </div>
+
+                    <div className="text-xs text-text-secondary p-3 bg-white/5 rounded-lg">
+                        <p>💡 <strong>Note:</strong> Only the event organizer can mint tickets. 
+                        Make sure you are using the same chain that created the event.</p>
+                    </div>
+
+                    <button type="submit" className="btn btn-primary w-full py-4 text-lg" disabled={loading}>
                         <Ticket className="mr-2" /> Mint Ticket
                     </button>
                 </form>

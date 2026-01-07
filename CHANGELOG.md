@@ -87,9 +87,8 @@ All notable changes to the Ticketh ticketing dApp will be documented in this fil
 
 ---
 
-## [Planned for Wave 5] - Focus: User Experience
+## Wave 5 - 2026-01-08
 
-### Core Features (Week 1)
 - **MetaMask Wallet Integration**
   - Multi-user account switching
   - Connect/disconnect wallet UI
@@ -117,7 +116,6 @@ All notable changes to the Ticketh ticketing dApp will be documented in this fil
 
 ## [Planned for Wave 6] - Focus: Advanced Features
 
-### Organizer Tools (Week 2)
 - **Event Organizer Dashboard**
   - Total sales and revenue metrics
   - Active/sold ticket counts
