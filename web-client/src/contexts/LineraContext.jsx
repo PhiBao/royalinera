@@ -18,9 +18,9 @@ const CONWAY_FAUCET_URL = 'https://faucet.testnet-conway.linera.net/';
 export const LineraProvider = ({ children }) => {
     const [client, setClient] = useState(null);
     const [wallet, setWallet] = useState(null);
-    const [chainId, setChainId] = useState(import.meta.env.VITE_CHAIN_ID || '');
-    const [appId, setAppId] = useState(import.meta.env.VITE_APP_ID || '');
-    const [owner, setOwner] = useState(import.meta.env.VITE_OWNER_ID || null);
+    const [chainId, setChainId] = useState(import.meta.env.VITE_MARKETPLACE_CHAIN_ID || '');
+    const [appId, setAppId] = useState(import.meta.env.VITE_LINERA_APPLICATION_ID || '');
+    const [owner, setOwner] = useState(null);
     const [application, setApplication] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
@@ -35,9 +35,9 @@ export const LineraProvider = ({ children }) => {
                 // Initialize Linera WASM module
                 await linera.default();
 
-                const applicationId = import.meta.env.VITE_APP_ID;
+                const applicationId = import.meta.env.VITE_LINERA_APPLICATION_ID;
                 if (!applicationId) {
-                    throw new Error('VITE_APP_ID is required');
+                    throw new Error('VITE_LINERA_APPLICATION_ID is required');
                 }
 
                 // Check for existing mnemonic or generate new one
@@ -83,15 +83,11 @@ export const LineraProvider = ({ children }) => {
                 setLoading(false);
             } catch (err) {
                 console.error("Failed to init Linera:", err);
-                // Fallback to env-based config for development
-                const serviceUrl = import.meta.env.VITE_SERVICE_URL;
-                if (serviceUrl) {
-                    console.log('⚠️ Falling back to direct service URL');
-                    setLoading(false);
-                } else {
-                    setError(err.message);
-                    setLoading(false);
-                }
+                // Fallback to proxy API for development
+                console.log('⚠️ Falling back to /api/hub proxy');
+                setAppId(import.meta.env.VITE_LINERA_APPLICATION_ID || '');
+                setChainId(import.meta.env.VITE_MARKETPLACE_CHAIN_ID || '');
+                setLoading(false);
             }
         };
         init();
@@ -108,17 +104,8 @@ export const LineraProvider = ({ children }) => {
             }
         }
 
-        // Fallback to direct HTTP for development
-        if (!chainId || !appId) throw new Error("Chain ID and App ID are required");
-
-        const serviceUrl = import.meta.env.VITE_SERVICE_URL || 'http://localhost:8080';
-        let endpoint = serviceUrl;
-
-        if (!serviceUrl.includes('/applications/')) {
-            endpoint = `${serviceUrl}/chains/${chainId}/applications/${appId}`;
-        }
-
-        const res = await fetch(endpoint, {
+        // Fallback to /api/hub proxy (configured in server.js via VITE_HUB_APP_URL)
+        const res = await fetch('/api/hub', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ query, variables }),
