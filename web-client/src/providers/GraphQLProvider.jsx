@@ -74,9 +74,16 @@ function createNodeClient() {
  * Creates an Apollo Client specifically for the hub chain
  */
 function createHubClient() {
-  // HTTP link goes directly to /api/hub (our proxy endpoint)
+  // Use direct URL if VITE_HUB_APP_URL is set (production), otherwise use local proxy
+  const hubUrl = import.meta.env.VITE_HUB_APP_URL || '/api/hub';
+  console.log('[GraphQL] Hub URL:', hubUrl);
+  
+  // HTTP link goes directly to hub URL
   const httpLink = new HttpLink({
-    uri: `/api/hub`,
+    uri: hubUrl,
+    headers: {
+      'ngrok-skip-browser-warning': '69420', // Skip ngrok interstitial page
+    },
   });
 
   return new ApolloClient({
