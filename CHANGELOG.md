@@ -87,34 +87,59 @@ All notable changes to the Ticketh ticketing dApp will be documented in this fil
 
 ---
 
-## Wave 5 - 2026-01-08
+## [Wave 5] - 2026-01-11
 
-- **MetaMask Wallet Integration**
-  - Multi-user account switching
-  - Connect/disconnect wallet UI
-  - Account balance display
-- **Enhanced Ticket Metadata**
-  - Image upload and display
-  - Rich text descriptions
-  - Venue information and maps
-- **Event Discovery**
-  - Search by event name
-  - Filter by date, price, availability
-  - Sort by popularity/date
-- **Ticket History**
-  - View all past transfers
-  - Transaction timeline
-  - Ownership provenance
+### Added
+- **Multi-Wallet Support**
+  - Multiple wallet accounts with easy switching
+  - Connect/disconnect wallet UI in header
+  - Wallet address display and account selector
+  - Session-persistent wallet selection
 
-### Technical Improvements
-- IndexedDB for wallet persistence
-- Image optimization and CDN integration
-- Responsive mobile design improvements
-- Frontend deployment to Vercel
+- **Owner-Based Ticket Tracking**
+  - Added `owner` field to Ticket struct (wallet address)
+  - Added `seller` field to Listing struct
+  - `ticketsByOwner` query for wallet-based lookups
+  - Case-insensitive wallet address comparisons
+  - Works with shared hub chain architecture
+
+- **Hub-and-Spoke Architecture**
+  - Marketplace hub chain stores all shared data (events, listings, tickets)
+  - User chains can forward operations to hub
+  - Stream-based event sync for real-time updates
+  - `InitialStateSync` message for new chain subscription
+
+- **Robust Retry Logic**
+  - Automatic retry (5 attempts, 3s delays) for testnet timestamp issues
+  - Applied to all mutations: mint, transfer, list, buy, cancel, create event
+  - Toast notifications show retry progress
+  - Handles quorum failures gracefully
+
+- **Transfer Ownership Fix**
+  - Hub maintains updated ticket references after transfers
+  - `ticketsByOwner` correctly finds transferred tickets
+  - Emits stream events for cross-chain sync
+
+### Changed
+- Listings query filters only Active listings (hides Cancelled/Sold)
+- Cancel listing gracefully handles already-cancelled listings (no crash on retry)
+- Marketplace displays "Cancel Listing" for own listings, "Buy Now" for others
+- My Tickets page shows wallet-owned tickets only
+
+### Technical
+- **Current Deployment**:
+  - Chain ID: `72f9d0af181a93b93aed812c8dbd12cba13d73cac273d05fc20391a9e7f9dbf3`
+  - Application ID: `6c15a3503c97265c6de4a3a5cc28d2074f4c45cea4880ced82132443b96768fb`
+  - Network: Conway Testnet
+  - Service Port: 8080
+
+### Known Issues
+- Conway testnet validators have clock drift causing timestamp errors (mitigated by retry logic)
+- Some validators may be temporarily unavailable (quorum still achieved)
 
 ---
 
-## [Planned for Wave 6] - Focus: Advanced Features
+## [Wave 6]
 
 - **Event Organizer Dashboard**
   - Total sales and revenue metrics

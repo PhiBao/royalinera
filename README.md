@@ -79,7 +79,9 @@ Connects to Conway Testnet via:
 - ✅ **Automatic Royalty Distribution** to event organizers
 - ✅ **GraphQL API** for all operations
 - ✅ **Modern React Frontend** with responsive design
-- ✅ **Conway Testnet Deployment** with retry logic for production reliability
+- ✅ **Conway Testnet Deployment** with automatic retry logic (5 retries, 3s delays)
+- ✅ **Multi-Wallet Support** with account switching
+- ✅ **Owner-Based Ticket Tracking** for wallet-specific queries
 
 ## Quick Start (Conway Testnet)
 
@@ -243,9 +245,10 @@ The current frontend connects to one GraphQL service (single wallet). This demon
 
 ### Deployed Application
 - **Network**: Conway Testnet
-- **Application ID**: `65f6519282173b0e03e79e2917fdcf358823487c416253d8f8842790f120ad2f`
-- **Service URL**: http://localhost:8085 (local run)
-- **Chain ID**: `cee119769a3a330cec7d18ee4042d3f65d9ecb365be5eeb6b32d2510504a01b3`
+- **Chain ID**: `72f9d0af181a93b93aed812c8dbd12cba13d73cac273d05fc20391a9e7f9dbf3`
+- **Application ID**: `6c15a3503c97265c6de4a3a5cc28d2074f4c45cea4880ced82132443b96768fb`
+- **Service Port**: 8080 (local)
+- **Frontend Port**: 5173 (local)
 
 ### Documentation
 - [CHANGELOG.md](./CHANGELOG.md) - Complete feature list and version history
