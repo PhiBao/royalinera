@@ -8,67 +8,87 @@ This project is built entirely with the Linera SDK:
 
 ### Smart Contract (Rust)
 ```rust
-// src/contract.rs - Uses linera_sdk Contract trait
-use linera_sdk::{Contract, ContractRuntime, views::{RootView, View}};
+// src/contract.rs - Hub-and-Spoke Cross-Chain Ticketing Contract
+use linera_sdk::{
+    linera_base_types::{ChainId, DataBlobHash, StreamUpdate, WithContractAbi},
+    views::{RootView, View},
+    Contract, ContractRuntime,
+};
 
 impl Contract for TicketingContract {
     type Message = Message;
+    type InstantiationArgument = ();
+    type Parameters = ApplicationParameters;
+    type EventValue = StreamEvent;
+
     async fn execute_operation(&mut self, operation: Operation) -> Self::Response { ... }
+    async fn execute_message(&mut self, message: Message) -> Self::Response { ... }
+}
+```
+
+### GraphQL Service (Rust)
+```rust
+// src/service.rs - GraphQL API for queries and mutations
+use async_graphql::{EmptySubscription, Object, Request, Response, Schema};
+use linera_sdk::{Service, ServiceRuntime, views::View};
+
+impl Service for TicketingService {
+    type Parameters = ();
+    async fn new(runtime: ServiceRuntime<Self>) -> Self { ... }
+    async fn handle_query(&self, request: Request) -> Response { ... }
 }
 ```
 
 ### Frontend (JavaScript) - @linera/client Web SDK
 ```javascript
-// web-client/src/contexts/WalletContext.jsx - Connects to Conway Testnet
+// web-client/src/contexts/WalletContext.jsx - Multi-wallet support
 import * as linera from '@linera/client';
 import { PrivateKey } from '@linera/signer';
-import { Wallet } from 'ethers';
 
-// Generate or import wallet
-const wallet = Wallet.createRandom();
-const privateKey = PrivateKey.fromMnemonic(wallet.mnemonic.phrase);
-const ownerAddress = await privateKey.getOwner();
+// Initialize WASM and create signer from mnemonic
+await linera.default('/wasm/linera_web_bg.wasm');
+const privateKeySigner = PrivateKey.fromMnemonic(mnemonic);
+const ownerAddress = privateKeySigner.address();
 
-// Connect to Conway Faucet
+// Connect to Conway Faucet and claim chain
 const faucet = new linera.Faucet('https://faucet.testnet-conway.linera.net/');
-const chainId = await faucet.claimChain(ownerAddress);
+const lineraWallet = await faucet.createWallet();
+const claimedChainId = await faucet.claimChain(lineraWallet, ownerAddress);
 
 // Create Linera client for blockchain operations
-const client = new linera.Client(faucet, privateKey);
-
-// Execute GraphQL queries/mutations
-const makeRequest = async (chainId, appId, query) => {
-  const app = await client.openChain(chainId, appId);
-  return await app.query(query);
-};
+const client = new linera.Client(lineraWallet, privateKeySigner, { skipProcessInbox: false });
+const frontend = client.frontend();
+const app = await frontend.application(applicationId);
 ```
 
 **Key SDK Features Used:**
-- `linera_sdk::Contract` - Smart contract logic implementation
-- `linera_sdk::Service` - GraphQL API service
-- `linera_views` - Persistent state management (MapView, RegisterView)
-- `linera_base_types` - Account, ChainId, ApplicationId types
-- Cross-chain messaging via `call_application`
+- `linera_sdk::Contract` - Smart contract logic with message handling
+- `linera_sdk::Service` - GraphQL API service with async-graphql
+- `linera_views` - Persistent state (MapView, RegisterView, SetView)
+- `linera_base_types` - ChainId, DataBlobHash, StreamUpdate types
+- Cross-chain messaging via `runtime.send_message()`
+- Event streaming via `runtime.emit()` and `MARKETPLACE_STREAM`
 - `@linera/client` - Web SDK for frontend blockchain interaction
-- `@linera/signer` - Wallet signing utilities
+- `@linera/signer` - Wallet signing with mnemonic support
 
 ## 🌐 Conway Testnet Deployment
 
 Connects to Conway Testnet via:
 - **Faucet**: `https://faucet.testnet-conway.linera.net/`
 - **Network Config**: Downloaded from `https://faucet.testnet-conway.linera.net/network.json`
-- **Deployment Script**: `scripts/dev-conway.sh` handles wallet init, module publish, and app creation
+- **Deployment**: `linera publish-and-create` with marketplace chain parameters
 
 **Latest Deployment:**
-- Chain ID: `cee119769a3a330cec7d18ee4042d3f65d9ecb365be5eeb6b32d2510504a01b3`
-- Application tested with all mutations working ✅
+- Chain ID: `72f9d0af181a93b93aed812c8dbd12cba13d73cac273d05fc20391a9e7f9dbf3`
+- Application ID: `6c15a3503c97265c6de4a3a5cc28d2074f4c45cea4880ced82132443b96768fb`
+- All mutations tested and working ✅
 
 ## Project Structure
-- `src/lib.rs` – ABI definitions (events, tickets, listings, royalty accounting)
-- `src/contract.rs` – Contract logic: create events, mint tickets, transfer/claim cross-chain, royalty splits, and marketplace
-- `src/service.rs` – GraphQL service for queries/mutations
-- `src/state.rs` – Application state management
-- `web-client/` – React + Vite frontend with responsive design
+- `src/lib.rs` – ABI definitions (events, tickets, listings, messages, stream events)
+- `src/contract.rs` – Hub-and-spoke contract: events, mint, transfer, marketplace, cross-chain sync
+- `src/service.rs` – GraphQL service with async-graphql for queries/mutations
+- `src/state.rs` – Application state with MapView, RegisterView, SetView
+- `web-client/` – React + Vite frontend with Apollo Client
 
 ## Features
 
@@ -77,11 +97,12 @@ Connects to Conway Testnet via:
 - ✅ **Cross-Chain Transfers** using Linera's microchain architecture
 - ✅ **On-Chain Marketplace** (list, buy, cancel with atomic transactions)
 - ✅ **Automatic Royalty Distribution** to event organizers
-- ✅ **GraphQL API** for all operations
-- ✅ **Modern React Frontend** with responsive design
+- ✅ **GraphQL API** for all operations (async-graphql)
+- ✅ **Modern React Frontend** with Apollo Client
 - ✅ **Conway Testnet Deployment** with automatic retry logic (5 retries, 3s delays)
-- ✅ **Multi-Wallet Support** with account switching
+- ✅ **Multi-Wallet Support** with account switching and IndexedDB persistence
 - ✅ **Owner-Based Ticket Tracking** for wallet-specific queries
+- ✅ **Hub-and-Spoke Architecture** with event stream synchronization
 
 ## Quick Start (Conway Testnet)
 
@@ -229,10 +250,13 @@ bash scripts/simulate-buyer.sh
 
 ## Architecture Decisions
 
-### Why Single-Service Mode?
-The current frontend connects to one GraphQL service (single wallet). This demonstrates all features but limits multi-user marketplace testing in the browser. 
+### Hub-and-Spoke Model
+The contract uses a hub-and-spoke architecture:
+- **Hub Chain**: Stores all shared data (events, listings, ticket references)
+- **User Chains**: Forward operations to hub via cross-chain messages
+- **Event Streaming**: Hub emits events that user chains subscribe to for sync
 
-**For Production**: Implement wallet connection (MetaMask, WalletConnect) so each user signs with their own keys. See future roadmap in [CHANGELOG.md](./CHANGELOG.md).
+**For Production**: Each user claims their own chain via faucet, operations route through hub for marketplace consistency.
 
 ## Team
 
@@ -241,7 +265,7 @@ The current frontend connects to one GraphQL service (single wallet). This demon
 - **Discord**: kiter99
 - **Wallet Address**: `0x86E95581E41946ED84956433a8a9c836bCbA636c`
 - **GitHub**: https://github.com/PhiBao/
-- **Submission**: Linera Wave 4
+- **Submission**: Linera Wave 5
 
 ### Deployed Application
 - **Network**: Conway Testnet
@@ -257,16 +281,17 @@ The current frontend connects to one GraphQL service (single wallet). This demon
 
 This project demonstrates several Linera SDK capabilities:
 
-1. **Microchain Architecture**: Each user can have their own chain for ticket management
-2. **Cross-Chain Messaging**: Tickets can be transferred atomically between chains
-3. **GraphQL Service**: Automatic API generation from contract state
-4. **Blob Storage**: Event metadata and ticket images stored efficiently
-5. **Event System**: Subscribe to transfers, purchases, and royalty distributions
-6. **Owner-Based Permissions**: Only ticket owners can list/transfer, only organizers can mint
-7. **Atomic State Updates**: Marketplace operations are all-or-nothing
+1. **Hub-and-Spoke Architecture**: Central hub chain with user chains forwarding operations
+2. **Cross-Chain Messaging**: `runtime.send_message()` for ticket transfers and marketplace ops
+3. **Event Streaming**: `runtime.emit()` with `MARKETPLACE_STREAM` for state synchronization
+4. **GraphQL Service**: async-graphql integration with `linera_sdk::Service`
+5. **Persistent State**: MapView, RegisterView, SetView from `linera_views`
+6. **Blob Storage**: DataBlobHash for ticket metadata references
+7. **Owner-Based Permissions**: Wallet address tracking for ownership verification
+8. **Atomic State Updates**: Marketplace operations are all-or-nothing
 
 ## Known Limitations
 
-- **Single-Account Demo**: Current frontend uses one wallet for simplicity
-- **CLI Required for Multi-User Testing**: Use provided scripts to simulate multiple buyers
-- **Future Enhancement**: Multi-wallet browser support (see CHANGELOG for roadmap)
+- **Testnet Timestamp Issues**: Conway validators have clock drift (mitigated by 5-retry logic with 3s delays)
+- **Faucet Dependency**: New users need faucet to claim chains
+- **Future Enhancement**: See [CHANGELOG.md](./CHANGELOG.md) for Wave 6/7 roadmap
