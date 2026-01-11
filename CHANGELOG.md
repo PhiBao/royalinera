@@ -139,24 +139,67 @@ All notable changes to the Ticketh ticketing dApp will be documented in this fil
 
 ---
 
-## [Wave 6]
+## [Planned - Wave 6] - Focus: Discovery & User Experience
 
-- **Event Organizer Dashboard**
-  - Total sales and revenue metrics
-  - Active/sold ticket counts
-  - Royalty earnings breakdown
-- **QR Code System**
-  - Generate QR codes for tickets
-  - Ticket validation scanner
-  - Check-in tracking
-- **Secondary Market Analytics**
-  - Price history charts
-  - Volume tracking
-  - Top sellers/buyers
+### Event Discovery & Search
+- **Search & Filtering**
+  - Search events by name/description
+  - Filter by date, availability, price range
+  - Sort by date, popularity, name
+- **Enhanced Marketplace**
+  - Search listings by event name
+  - Sort by price (low/high)
+  - Filter to hide own listings
+
+### Ticket Management
+- **Ticket History & Provenance**
+  - Full ownership history timeline
+  - Transfer records with timestamps
+  - Price history for each ticket
+- **Enhanced Metadata**
+  - Ticket image upload and display
+  - Rich text descriptions
+  - Venue information
+
+### Wallet Improvements
+- **Import/Export Wallets**
+  - Mnemonic backup and restore
+  - IndexedDB persistence for wallets
+  - Account switching improvements
+- **Balance Display**
+  - Show wallet balance in header
+  - Transaction history
+
+### Technical
+- Vercel deployment with SPA routing
+- Environment-based API configuration
+- Improved error handling and user feedback
+
+---
+
+## [Planned - Wave 7] - Focus: Advanced Features
+
+### Event Organizer Dashboard
+- Total sales and revenue metrics
+- Active/sold ticket counts
+- Royalty earnings breakdown
+- Event performance analytics
+
+### QR Code System
+- Generate QR codes for tickets
+- Ticket validation scanner app
+- Check-in tracking and reporting
+- Duplicate ticket detection
+
+### Secondary Market Analytics
+- Price history charts
+- Volume tracking over time
+- Top sellers/buyers leaderboard
+- Market trends visualization
 
 ### Advanced Marketplace
 - **Time-Limited Listings**
-  - Expiration timestamps
+  - Expiration timestamps on listings
   - Auto-cancel expired listings
   - Countdown timers in UI
 - **Ticket Bundles**
@@ -168,7 +211,7 @@ All notable changes to the Ticketh ticketing dApp will be documented in this fil
 - WebSocket subscriptions for real-time updates
 - Optimistic UI updates
 - Advanced caching strategies
-- Performance monitoring
+- Performance monitoring and analytics
 
 ---
 
@@ -176,9 +219,9 @@ All notable changes to the Ticketh ticketing dApp will be documented in this fil
 
 ### Deployment Info
 - **Network**: Conway Testnet
-- **Chain ID**: `359b32bf632e6724a2ca41fb446017dbf834edd31073d8d61b7d66f9560c87aa`
-- **Application ID**: `d60f9a84ab1844cd8acb2133adcba33e7aa065e9c5b05179917d7ba4021395bf`
-- **Owner**: `0xd076593ce080dedf0cddb4afe5b4c2c9d8058dc7c3004d3b623fcfa8931cdd26`
+- **Chain ID**: `4852f46710e52e0ba53179b6a7bfec530d79885b5c27d9a4984d55e88cae721e`
+- **Application ID**: `1760a569d07b95ea48a8b05ee2b69f8a1eac078530521cb20cd76fab3cfc9569`
+- **Owner**: `0x37526fce9ad3173a124656712b9ad105331696d9d2eaf74a28030930a1c87555`
 - **Service URL**: `http://localhost:8085`
 
 ### Key Learnings
