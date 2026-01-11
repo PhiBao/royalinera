@@ -88,31 +88,77 @@ Connects to Conway Testnet via:
 - Linera CLI installed: Follow [Linera installation guide](https://linera.dev/)
 - Node.js 18+ and npm (for frontend)
 
-### Backend Deployment
-
-Use the automated deployment script with retry logic:
+### Option 1: Automated Deployment (Recommended)
 
 ```bash
-# Deploy to Conway testnet
-bash scripts/dev-conway.sh
+# Deploy to Conway testnet (initializes wallet, builds, publishes)
+./scripts/deploy.sh
+
+# If you need to reset and start fresh:
+./scripts/deploy.sh --clean
 ```
 
-This script will:
-1. Set up Conway network configuration
-2. Initialize wallet and request a chain
-3. Build WASM binaries
-4. Publish module and create application (with automatic retries)
-5. Start the GraphQL service on port 8085
+### Option 2: Manual Deployment
+
+```bash
+# Step 1: Initialize wallet (delete existing if corrupted)
+rm -rf ~/.config/linera
+linera wallet init --faucet https://faucet.testnet-conway.linera.net
+
+# Step 2: Get your chain ID
+linera wallet show
+
+# Step 3: Set default chain
+linera wallet set-default YOUR_CHAIN_ID
+
+# Step 4: Build WASM
+cargo build --release --target wasm32-unknown-unknown
+
+# Step 5: Publish and create application
+linera publish-and-create \
+  target/wasm32-unknown-unknown/release/ticketing_contract.wasm \
+  target/wasm32-unknown-unknown/release/ticketing_service.wasm
+
+# Step 6: Start Linera service (Terminal 1)
+linera service --port 8080
+
+# Step 7: Update frontend config and run (Terminal 2)
+# Edit web-client/src/providers/GraphQLProvider.jsx with your Chain ID and App ID
+cd web-client
+npm install
+npm run dev -- --host 0.0.0.0
+```
 
 ### Frontend Setup
 
 ```bash
 cd web-client
 npm install
-npm run dev
+npm run dev -- --host 0.0.0.0
 ```
 
-Open http://localhost:5173 and connect with your wallet to start using the app.
+Open http://localhost:5173 (or http://YOUR_SERVER_IP:5173 for remote access)
+
+### Troubleshooting
+
+**Error: "storage operation error"**
+```bash
+rm -rf ~/.config/linera
+linera wallet init --faucet https://faucet.testnet-conway.linera.net
+```
+
+**Error: "client is not configured to propose on chain"**
+```bash
+# Reset wallet and reinitialize
+rm -rf ~/.config/linera
+linera wallet init --faucet https://faucet.testnet-conway.linera.net
+linera wallet set-default $(linera wallet show | grep -oP 'Chain ID:\s*\K[a-f0-9]+' | head -1)
+```
+
+**Error: "default chain requested but none set"**
+```bash
+linera wallet set-default YOUR_CHAIN_ID
+```
 
 ## Local Development
 
@@ -124,10 +170,14 @@ linera net up --with-faucet
 
 # Terminal 2: Deploy application
 cargo build --release --target wasm32-unknown-unknown
-linera publish-module target/wasm32-unknown-unknown/release/ticketing_contract.wasm \
+linera publish-and-create \
+  target/wasm32-unknown-unknown/release/ticketing_contract.wasm \
   target/wasm32-unknown-unknown/release/ticketing_service.wasm
 
-# Terminal 3: Run frontend
+# Terminal 3: Start service
+linera service --port 8080
+
+# Terminal 4: Run frontend
 cd web-client && npm run dev
 ```
 

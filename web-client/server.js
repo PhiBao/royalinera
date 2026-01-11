@@ -9,11 +9,11 @@ const app = express();
 
 // Linera service configuration
 const NODE_SERVICE_PORT = process.env.LINERA_SERVICE_PORT || 8080;
-const HUB_CHAIN_ID = process.env.HUB_CHAIN_ID || 'a6f2e101a65522962a5cc4a422202e3374f9d11215258c88e7496bdaadde9635';
-const APP_ID = process.env.APP_ID || 'ad184ec9fe226812c377847c68f470f1ca39a80cc755db32c67fef142f13097a';
+const HUB_CHAIN_ID = process.env.VITE_MARKETPLACE_CHAIN_ID;
+const APP_ID = process.env.VITE_LINERA_APPLICATION_ID;
 
-// Build the hub application URL
-const HUB_APP_URL = `http://localhost:${NODE_SERVICE_PORT}/chains/${HUB_CHAIN_ID}/applications/${APP_ID}`;
+// Hub application URL - use env for production domain, fallback to localhost for dev
+const HUB_APP_URL = process.env.VITE_HUB_APP_URL || `http://localhost:${NODE_SERVICE_PORT}/chains/${HUB_CHAIN_ID}/applications/${APP_ID}`;
 
 // Add COOP/COEP headers for SharedArrayBuffer support (needed for crypto operations)
 app.use((req, res, next) => {
