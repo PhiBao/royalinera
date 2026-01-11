@@ -52,18 +52,33 @@ impl Contract for TicketingContract {
 
     async fn instantiate(&mut self, _argument: ()) {
         // Get marketplace chain from application parameters (shared across all chains)
+        // If empty, use the creation chain (current chain during instantiation)
         let params = self.runtime.application_parameters();
-        self.state.marketplace_chain.set(params.marketplace_chain.clone());
+        let marketplace_chain = if params.marketplace_chain.is_empty() {
+            self.runtime.chain_id().to_string()
+        } else {
+            params.marketplace_chain.clone()
+        };
+        self.state.marketplace_chain.set(marketplace_chain.clone());
         self.state.total_royalties.set(0);
         
-        eprintln!("[INSTANTIATE] Marketplace chain set to: {}", self.state.marketplace_chain.get());
+        eprintln!("[INSTANTIATE] Marketplace chain set to: {}", marketplace_chain);
     }
 
     async fn execute_operation(&mut self, operation: Operation) -> Self::Response {
         let caller_chain = self.runtime.chain_id().to_string();
-        // Read marketplace_chain from parameters (shared across all chains via app ID)
+        // Read marketplace_chain from state (set during instantiation) or fallback to params
         let params = self.runtime.application_parameters();
-        let marketplace_chain = params.marketplace_chain.clone();
+        let marketplace_chain = if params.marketplace_chain.is_empty() {
+            // Use stored state if params are empty
+            self.state.marketplace_chain.get().clone()
+        } else {
+            params.marketplace_chain.clone()
+        };
+        
+        // Validate marketplace chain is set
+        assert!(!marketplace_chain.is_empty(), "Invalid marketplace chain ID: {}", marketplace_chain);
+        
         let is_hub = caller_chain == marketplace_chain;
         eprintln!("[EXECUTE] caller={}, hub={}, is_hub={}", caller_chain, marketplace_chain, is_hub);
 
@@ -104,15 +119,17 @@ impl Contract for TicketingContract {
                 event_id,
                 seat,
                 blob_hash,
+                owner,
             } => {
                 // Minting happens on the hub (where events live)
                 if is_hub {
-                    self.mint_ticket(caller_chain, event_id, seat, blob_hash).await;
+                    self.mint_ticket(caller_chain, owner, event_id, seat, blob_hash).await;
                 } else {
                     // Forward mint request to hub
                     // The hub will mint the ticket and we'll reference it
                     self.forward_to_hub(Message::MintTicketRequest {
                         minter_chain: caller_chain,
+                        owner,
                         event_id,
                         seat,
                         blob_hash,
@@ -124,37 +141,44 @@ impl Contract for TicketingContract {
             Operation::TransferTicket {
                 ticket_id,
                 buyer_chain,
+                new_owner,
                 sale_price,
             } => {
                 let ticket = self.get_ticket(&ticket_id).await;
-                assert_eq!(ticket.owner_chain, caller_chain, "Not the ticket owner");
-                self.transfer(ticket, caller_chain, buyer_chain, sale_price).await;
+                // Ownership check: must match both chain and owner
+                assert_eq!(ticket.owner_chain, caller_chain, "Not the ticket owner chain");
+                // Note: In demo mode, tickets should be transferred with owner tracking
+                self.transfer(ticket, caller_chain, buyer_chain, new_owner, sale_price).await;
             }
             
             Operation::ClaimTicket {
                 source_chain,
                 ticket_id,
+                new_owner,
                 sale_price,
             } => {
                 if source_chain == caller_chain {
                     // Local claim - no-op
                 } else {
-                    self.remote_claim(source_chain, ticket_id, caller_chain, sale_price);
+                    self.remote_claim(source_chain, ticket_id, caller_chain, new_owner, sale_price);
                 }
             }
             
-            Operation::CreateListing { ticket_id, price } => {
+            Operation::CreateListing { ticket_id, price, seller } => {
                 if is_hub {
                     // On hub - create directly
-                    self.create_listing_local(caller_chain, ticket_id, price).await;
+                    self.create_listing_local(caller_chain, seller, ticket_id, price).await;
                 } else {
                     // Must have ticket locally, then forward to hub
                     let ticket = self.get_ticket(&ticket_id).await;
-                    assert_eq!(ticket.owner_chain, caller_chain, "Not the ticket owner");
+                    assert_eq!(ticket.owner_chain, caller_chain, "Not the ticket owner chain");
+                    // Case-insensitive comparison for wallet addresses
+                    assert_eq!(ticket.owner.to_lowercase(), seller.to_lowercase(), "Not the ticket owner");
                     
                     let listing = Listing {
                         ticket_id: ticket_id.clone(),
                         seller_chain: caller_chain.clone(),
+                        seller: seller.clone(),
                         price,
                         status: ListingStatus::Active,
                     };
@@ -167,24 +191,26 @@ impl Contract for TicketingContract {
                 }
             }
             
-            Operation::CancelListing { ticket_id } => {
+            Operation::CancelListing { ticket_id, seller } => {
                 if is_hub {
-                    self.cancel_listing_local(caller_chain.clone(), ticket_id).await;
+                    self.cancel_listing_local(caller_chain.clone(), seller, ticket_id).await;
                 } else {
                     self.forward_to_hub(Message::CancelListingOnHub {
                         ticket_id,
                         seller_chain: caller_chain,
+                        seller,
                     });
                 }
             }
             
-            Operation::BuyListing { ticket_id, price } => {
+            Operation::BuyListing { ticket_id, price, buyer } => {
                 if is_hub {
-                    self.buy_listing_local(caller_chain, ticket_id, price).await;
+                    self.buy_listing_local(caller_chain, buyer, ticket_id, price).await;
                 } else {
                     self.forward_to_hub(Message::BuyListingOnHub {
                         ticket_id,
                         buyer_chain: caller_chain,
+                        buyer,
                         price,
                     });
                 }
@@ -231,11 +257,12 @@ impl Contract for TicketingContract {
                 source_chain,
                 ticket_id,
                 requester_chain,
+                new_owner,
                 sale_price,
             } => {
                 let ticket = self.get_ticket(&ticket_id).await;
                 assert_eq!(ticket.owner_chain, source_chain, "Ticket not owned by source");
-                self.transfer(ticket, source_chain, requester_chain, sale_price).await;
+                self.transfer(ticket, source_chain, requester_chain, new_owner, sale_price).await;
             }
             
             // Hub-bound messages - only processed on the hub
@@ -258,15 +285,15 @@ impl Contract for TicketingContract {
                 }
             }
             
-            Message::CancelListingOnHub { ticket_id, seller_chain } => {
+            Message::CancelListingOnHub { ticket_id, seller_chain, seller } => {
                 if is_hub {
-                    self.cancel_listing_local(seller_chain, ticket_id).await;
+                    self.cancel_listing_local(seller_chain, seller, ticket_id).await;
                 }
             }
             
-            Message::BuyListingOnHub { ticket_id, buyer_chain, price } => {
+            Message::BuyListingOnHub { ticket_id, buyer_chain, buyer, price } => {
                 if is_hub {
-                    self.buy_listing_local(buyer_chain, ticket_id, price).await;
+                    self.buy_listing_local(buyer_chain, buyer, ticket_id, price).await;
                 }
             }
             
@@ -279,10 +306,10 @@ impl Contract for TicketingContract {
                 }
             }
             
-            Message::MintTicketRequest { minter_chain, event_id, seat, blob_hash } => {
+            Message::MintTicketRequest { minter_chain, owner, event_id, seat, blob_hash } => {
                 if is_hub {
                     // Hub processes mint request from user chain
-                    self.mint_ticket(minter_chain, event_id, seat, blob_hash).await;
+                    self.mint_ticket(minter_chain, owner, event_id, seat, blob_hash).await;
                     eprintln!("[HUB] MintTicketRequest processed from remote chain");
                 } else {
                     eprintln!("[WARN] MintTicketRequest received on non-hub chain");
@@ -459,6 +486,7 @@ impl TicketingContract {
     async fn mint_ticket(
         &mut self,
         minter_chain: String,
+        owner: String,
         event_id: EventId,
         seat: String,
         blob_hash: DataBlobHash,
@@ -496,6 +524,7 @@ impl TicketingContract {
             seat,
             organizer_chain: event.organizer_chain.clone(),
             owner_chain: owner_chain.clone(),
+            owner: owner.clone(),
             minter_chain,
             royalty_bps: event.royalty_bps,
             metadata_hash: blob_hash,
@@ -562,6 +591,7 @@ impl TicketingContract {
         ticket: Ticket,
         seller_chain: String,
         buyer_chain: String,
+        new_owner: String,
         sale_price: Option<u128>,
     ) {
         // Remove from seller's ownership
@@ -597,20 +627,51 @@ impl TicketingContract {
             }
         }
 
-        // Remove ticket from local storage
-        self.state.tickets.remove(&ticket.ticket_id).unwrap();
-
         // Cancel any existing listing
         if self.state.listings.get(&ticket.ticket_id).await.unwrap().is_some() {
             self.state.listings.remove(&ticket.ticket_id).unwrap();
         }
 
+        // Create updated ticket with new owner
+        let mut updated_ticket = ticket.clone();
+        updated_ticket.owner_chain = buyer_chain.clone();
+        updated_ticket.owner = new_owner.clone();
+        updated_ticket.last_sale_price = sale_price;
+
+        // Check if we're on the hub - keep updated ticket reference for ticketsByOwner query
+        let marketplace_chain = self.state.marketplace_chain.get().clone();
+        let current_chain = self.runtime.chain_id().to_string();
+        let is_hub = current_chain == marketplace_chain;
+        
+        if is_hub {
+            // On hub: update ticket in place (don't remove) so ticketsByOwner can find it
+            self.state.tickets.insert(&ticket.ticket_id, updated_ticket.clone()).unwrap();
+            
+            // Add to buyer's ownership on hub
+            let mut buyer_owned = self
+                .state
+                .owned_ticket_ids
+                .get(&buyer_chain)
+                .await
+                .unwrap()
+                .unwrap_or_default();
+            buyer_owned.insert(ticket.ticket_id.clone());
+            self.state.owned_ticket_ids.insert(&buyer_chain, buyer_owned).unwrap();
+            
+            // Emit updated ticket to stream so other chains can sync
+            self.runtime.emit(
+                MARKETPLACE_STREAM.into(),
+                &StreamEvent::TicketMinted { ticket: updated_ticket.clone() },
+            );
+            
+            eprintln!("[TRANSFER] Hub updated ticket ownership: {} -> {}", ticket.owner, new_owner);
+        } else {
+            // Not on hub: remove local ticket (it's moving to another chain)
+            self.state.tickets.remove(&ticket.ticket_id).unwrap();
+        }
+
         // Parse target chain and send message
         if let Ok(target_chain_id) = buyer_chain.parse::<ChainId>() {
-            let mut updated_ticket = ticket.clone();
-            updated_ticket.owner_chain = buyer_chain.clone();
-            updated_ticket.last_sale_price = sale_price;
-
             self.runtime.send_message(
                 target_chain_id,
                 Message::Transfer {
@@ -653,6 +714,7 @@ impl TicketingContract {
         source_chain: String,
         ticket_id: TicketId,
         requester_chain: String,
+        new_owner: String,
         sale_price: Option<u128>,
     ) {
         if let Ok(source_chain_id) = source_chain.parse::<ChainId>() {
@@ -662,6 +724,7 @@ impl TicketingContract {
                     source_chain: source_chain.clone(),
                     ticket_id,
                     requester_chain,
+                    new_owner,
                     sale_price,
                 },
             );
@@ -669,14 +732,17 @@ impl TicketingContract {
     }
 
     /// Creates a marketplace listing locally (on hub).
-    async fn create_listing_local(&mut self, seller_chain: String, ticket_id: TicketId, price: u128) {
+    async fn create_listing_local(&mut self, seller_chain: String, seller: String, ticket_id: TicketId, price: u128) {
         // On hub, verify ticket exists
         let ticket = self.get_ticket(&ticket_id).await;
-        assert_eq!(ticket.owner_chain, seller_chain, "Not the ticket owner");
+        assert_eq!(ticket.owner_chain, seller_chain, "Not the ticket owner chain");
+        // Case-insensitive comparison for wallet addresses
+        assert_eq!(ticket.owner.to_lowercase(), seller.to_lowercase(), "Not the ticket owner");
 
         let listing = Listing {
             ticket_id: ticket_id.clone(),
             seller_chain,
+            seller,
             price,
             status: ListingStatus::Active,
         };
@@ -692,16 +758,31 @@ impl TicketingContract {
     }
 
     /// Cancels a marketplace listing locally (on hub).
-    async fn cancel_listing_local(&mut self, seller_chain: String, ticket_id: TicketId) {
+    async fn cancel_listing_local(&mut self, seller_chain: String, seller: String, ticket_id: TicketId) {
         let listing = self
             .state
             .listings
             .get(&ticket_id)
             .await
-            .unwrap()
-            .expect("listing not found");
-        assert_eq!(listing.seller_chain, seller_chain, "Not the seller");
-        assert_eq!(listing.status, ListingStatus::Active, "Listing not active");
+            .unwrap();
+        
+        // If listing doesn't exist or is already cancelled/sold, just return
+        let listing = match listing {
+            Some(l) => l,
+            None => {
+                eprintln!("[CANCEL_LISTING] Listing not found, skipping");
+                return;
+            }
+        };
+        
+        if listing.status != ListingStatus::Active {
+            eprintln!("[CANCEL_LISTING] Listing already {:?}, skipping", listing.status);
+            return;
+        }
+        
+        assert_eq!(listing.seller_chain, seller_chain, "Not the seller chain");
+        // Case-insensitive comparison for wallet addresses
+        assert_eq!(listing.seller.to_lowercase(), seller.to_lowercase(), "Not the seller");
 
         let mut updated = listing;
         updated.status = ListingStatus::Cancelled;
@@ -717,7 +798,7 @@ impl TicketingContract {
     }
 
     /// Buys a marketplace listing locally (on hub).
-    async fn buy_listing_local(&mut self, buyer_chain: String, ticket_id: TicketId, price: u128) {
+    async fn buy_listing_local(&mut self, buyer_chain: String, buyer: String, ticket_id: TicketId, price: u128) {
         let listing = self
             .state
             .listings
@@ -727,6 +808,8 @@ impl TicketingContract {
             .expect("listing not found");
         assert_eq!(listing.status, ListingStatus::Active, "Listing not active");
         assert_eq!(listing.price, price, "Price mismatch");
+        // Prevent self-purchase (case-insensitive)
+        assert!(listing.seller.to_lowercase() != buyer.to_lowercase(), "Cannot buy your own listing");
 
         let ticket = self.get_ticket(&ticket_id).await;
         let seller_chain = listing.seller_chain.clone();
@@ -742,8 +825,8 @@ impl TicketingContract {
             &StreamEvent::ListingUpdated { listing: updated },
         );
 
-        // Transfer the ticket
-        self.transfer(ticket, seller_chain, buyer_chain, Some(price)).await;
+        // Transfer the ticket to the buyer
+        self.transfer(ticket, seller_chain, buyer_chain, buyer, Some(price)).await;
         eprintln!("[BUY_LISTING] Listing purchased on hub and emitted to stream");
     }
 }

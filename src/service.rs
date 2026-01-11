@@ -37,6 +37,7 @@ impl WithServiceAbi for TicketingService {
 struct ListingInfo {
     ticket_id: String,
     seller_chain: String,
+    seller: String,
     price: String,
     status: String,
 }
@@ -140,25 +141,26 @@ impl QueryRoot {
         tickets
     }
 
+    /// Get all active listings (filters out Cancelled/Sold)
     async fn listings(&self) -> BTreeMap<String, ListingInfo> {
         let mut map = BTreeMap::new();
         self.state
             .listings
             .for_each_index_value(|ticket_id, listing| {
                 let listing = listing.into_owned();
+                // Only return Active listings
+                if listing.status != ListingStatus::Active {
+                    return Ok(());
+                }
                 let ticket_key = STANDARD_NO_PAD.encode(ticket_id.id.clone());
-                let status = match listing.status {
-                    ListingStatus::Active => "Active".to_string(),
-                    ListingStatus::Cancelled => "Cancelled".to_string(),
-                    ListingStatus::Sold => "Sold".to_string(),
-                };
                 map.insert(
                     ticket_key.clone(),
                     ListingInfo {
                         ticket_id: ticket_key,
                         seller_chain: listing.seller_chain,
+                        seller: listing.seller,
                         price: listing.price.to_string(),
-                        status,
+                        status: "Active".to_string(),
                     },
                 );
                 Ok(())
@@ -193,6 +195,24 @@ impl QueryRoot {
             .flatten()
             .map(|ticket_id| STANDARD_NO_PAD.encode(ticket_id.id))
             .collect()
+    }
+
+    /// Get tickets by owner wallet address (for demo mode)
+    async fn tickets_by_owner(&self, owner: String) -> Vec<String> {
+        let owner_lower = owner.to_lowercase();
+        let mut result = Vec::new();
+        
+        // Iterate through all tickets and filter by owner address
+        let ticket_ids = self.state.tickets.indices().await.unwrap();
+        for ticket_id in ticket_ids {
+            if let Some(ticket) = self.state.tickets.get(&ticket_id).await.unwrap() {
+                if ticket.owner.to_lowercase() == owner_lower {
+                    result.push(STANDARD_NO_PAD.encode(&ticket_id.id));
+                }
+            }
+        }
+        
+        result
     }
 
     /// Get royalty balance for a chain
@@ -252,11 +272,13 @@ impl MutationRoot {
     }
 
     /// Mint a ticket (caller must be event organizer)
+    /// owner: wallet address of the minter (for demo mode ownership tracking)
     async fn mint_ticket(
         &self,
         event_id: String,
         seat: String,
         blob_hash: String,
+        owner: String,
     ) -> String {
         // Parse blob hash from hex string (simple manual hex decode)
         let blob_hash_clean = blob_hash.strip_prefix("0x").unwrap_or(&blob_hash);
@@ -275,22 +297,26 @@ impl MutationRoot {
             event_id: EventId { value: event_id.clone() },
             seat: seat.clone(),
             blob_hash,
+            owner,
         };
         self.runtime.schedule_operation(&operation);
         format!("Ticket for seat '{}' in event '{}' minting scheduled", seat, event_id)
     }
 
     /// Transfer a ticket (caller must own it)
+    /// new_owner: wallet address of the new owner
     async fn transfer_ticket(
         &self,
         ticket_id: String,
         buyer_chain: String,
+        new_owner: String,
         sale_price: Option<String>,
     ) -> String {
         let sale_price = sale_price.and_then(|s| s.parse::<u128>().ok());
         let operation = Operation::TransferTicket {
             ticket_id: decode_ticket_id(&ticket_id),
             buyer_chain,
+            new_owner,
             sale_price,
         };
         self.runtime.schedule_operation(&operation);
@@ -298,51 +324,61 @@ impl MutationRoot {
     }
 
     /// Create a listing (caller must own the ticket)
+    /// seller: wallet address of the seller (must match ticket.owner)
     async fn create_listing(
         &self,
         ticket_id: String,
         price: String,
+        seller: String,
     ) -> String {
         let price = price.parse::<u128>().unwrap_or(0);
         let operation = Operation::CreateListing {
             ticket_id: decode_ticket_id(&ticket_id),
             price,
+            seller,
         };
         self.runtime.schedule_operation(&operation);
         "Listing created".to_string()
     }
 
     /// Cancel a listing (caller must be seller)
-    async fn cancel_listing(&self, ticket_id: String) -> String {
+    /// seller: wallet address of the seller (must match listing.seller)
+    async fn cancel_listing(&self, ticket_id: String, seller: String) -> String {
         let operation = Operation::CancelListing {
             ticket_id: decode_ticket_id(&ticket_id),
+            seller,
         };
         self.runtime.schedule_operation(&operation);
         "Listing cancelled".to_string()
     }
 
     /// Buy a listing (caller becomes buyer)
-    async fn buy_listing(&self, ticket_id: String, price: String) -> String {
+    /// buyer: wallet address of the buyer
+    async fn buy_listing(&self, ticket_id: String, price: String, buyer: String) -> String {
         let price = price.parse::<u128>().unwrap_or(0);
         let operation = Operation::BuyListing {
             ticket_id: decode_ticket_id(&ticket_id),
             price,
+            buyer,
         };
         self.runtime.schedule_operation(&operation);
         "Purchase scheduled".to_string()
     }
 
     /// Claim a ticket from a remote chain
+    /// new_owner: wallet address of the new owner
     async fn claim_ticket(
         &self,
         source_chain: String,
         ticket_id: String,
+        new_owner: String,
         sale_price: Option<String>,
     ) -> String {
         let sale_price = sale_price.and_then(|s| s.parse::<u128>().ok());
         let operation = Operation::ClaimTicket {
             source_chain,
             ticket_id: decode_ticket_id(&ticket_id),
+            new_owner,
             sale_price,
         };
         self.runtime.schedule_operation(&operation);

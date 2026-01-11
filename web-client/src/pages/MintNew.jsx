@@ -17,20 +17,22 @@ const GET_EVENTS = gql`
 const GET_EVENT = gql`
   query GetEvent($eventId: String!) {
     event(eventId: $eventId) {
-      eventId
+      id { value }
       name
-      date
+      description
       venue
-      totalTickets
-      availableTickets
-      ticketPrice
+      startTime
+      organizerChain
+      royaltyBps
+      maxTickets
+      mintedTickets
     }
   }
 `;
 
 const MINT_TICKET = gql`
-  mutation MintTicket($eventId: String!, $seat: String!) {
-    mintTicket(eventId: $eventId, seat: $seat)
+  mutation MintTicket($eventId: String!, $owner: String!, $seat: String!, $blobHash: String!) {
+    mintTicket(eventId: $eventId, owner: $owner, seat: $seat, blobHash: $blobHash)
   }
 `;
 
@@ -104,7 +106,7 @@ const styles = {
         width: '100%',
         padding: '14px 16px',
         paddingRight: '40px',
-        backgroundColor: 'rgba(255,255,255,0.05)',
+        backgroundColor: '#1e1e1e',
         border: '1px solid rgba(255,255,255,0.1)',
         borderRadius: '12px',
         color: '#ffffff',
@@ -220,13 +222,62 @@ const styles = {
 const Mint = () => {
     const navigate = useNavigate();
     const [searchParams] = useSearchParams();
-    const { isConnected, openWalletModal } = useWallet();
+    const { isConnected, openWalletModal, address: userAddress } = useWallet();
     const { hubClient } = useGraphQL();
     
     const preselectedEventId = searchParams.get('eventId');
     
     const [selectedEventId, setSelectedEventId] = useState(preselectedEventId || '');
     const [seat, setSeat] = useState('');
+    const [minting, setMinting] = useState(false);
+
+    // Retry wrapper for mutations with testnet timestamp issues
+    const withRetry = async (mutationFn, variables, options = {}) => {
+        const { maxRetries = 5, delay = 3000, onSuccess, onError } = options;
+        const toastId = toast.loading('Processing...');
+        
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                const result = await mutationFn({ variables });
+                
+                if (result.errors && result.errors.length > 0) {
+                    const errorMsg = result.errors[0].message || 'Unknown error';
+                    const isRetryable = errorMsg.includes('timestamp') || 
+                                       errorMsg.includes('future') || 
+                                       errorMsg.includes('quorum') ||
+                                       errorMsg.includes('malformed');
+                    
+                    if (isRetryable && attempt < maxRetries) {
+                        toast.loading(`Retry ${attempt}/${maxRetries}... waiting ${delay/1000}s`, { id: toastId });
+                        await new Promise(r => setTimeout(r, delay));
+                        continue;
+                    }
+                    throw new Error(errorMsg);
+                }
+                
+                toast.success('Success!', { id: toastId });
+                if (onSuccess) onSuccess(result);
+                return result;
+                
+            } catch (err) {
+                const errorMsg = err.message || 'Unknown error';
+                const isRetryable = errorMsg.includes('timestamp') || 
+                                   errorMsg.includes('future') || 
+                                   errorMsg.includes('quorum') ||
+                                   errorMsg.includes('malformed');
+                
+                if (isRetryable && attempt < maxRetries) {
+                    toast.loading(`Retry ${attempt}/${maxRetries}... waiting ${delay/1000}s`, { id: toastId });
+                    await new Promise(r => setTimeout(r, delay));
+                    continue;
+                }
+                
+                toast.error(`Failed: ${errorMsg}`, { id: toastId });
+                if (onError) onError(err);
+                return null;
+            }
+        }
+    };
 
     // Fetch all events for the dropdown
     const { data: eventsData, loading: eventsLoading } = useQuery(GET_EVENTS, {
@@ -235,7 +286,17 @@ const Mint = () => {
 
     const eventIds = useMemo(() => {
         if (!eventsData?.events) return [];
+        // Backend returns object {eventId: Event}, convert to array of IDs
+        if (typeof eventsData.events === 'object' && !Array.isArray(eventsData.events)) {
+            return Object.keys(eventsData.events);
+        }
         return Array.isArray(eventsData.events) ? eventsData.events : [];
+    }, [eventsData]);
+    
+    // Get event names for dropdown display
+    const eventsMap = useMemo(() => {
+        if (!eventsData?.events || Array.isArray(eventsData.events)) return {};
+        return eventsData.events;
     }, [eventsData]);
 
     // Fetch selected event details
@@ -246,17 +307,13 @@ const Mint = () => {
     });
 
     const selectedEvent = eventData?.event;
-    const soldOut = selectedEvent && selectedEvent.availableTickets <= 0;
+    const availableTickets = selectedEvent ? selectedEvent.maxTickets - selectedEvent.mintedTickets : 0;
+    const soldOut = selectedEvent && availableTickets <= 0;
 
     // Mint mutation
-    const [mintTicket, { loading: minting }] = useMutation(MINT_TICKET, {
+    const [mintTicketMutation] = useMutation(MINT_TICKET, {
         client: hubClient,
         fetchPolicy: 'no-cache',
-        onCompleted: () => {
-            toast.success('Ticket minted successfully!');
-            navigate('/my-tickets');
-        },
-        onError: (err) => toast.error(`Minting failed: ${err.message}`),
     });
 
     useEffect(() => {
@@ -275,12 +332,18 @@ const Mint = () => {
             toast.error('Please select an event');
             return;
         }
-        await mintTicket({
-            variables: {
-                eventId: selectedEventId,
-                seat: seat || 'General Admission',
-            },
+        setMinting(true);
+        // Generate a placeholder blob hash (32 bytes of zeros as hex)
+        const blobHash = '0x' + '0'.repeat(64);
+        await withRetry(mintTicketMutation, {
+            eventId: selectedEventId,
+            owner: userAddress,
+            seat: seat || 'General Admission',
+            blobHash,
+        }, {
+            onSuccess: () => navigate('/my-tickets'),
         });
+        setMinting(false);
     };
 
     if (eventsLoading) {
@@ -336,9 +399,11 @@ const Mint = () => {
                                         onChange={(e) => setSelectedEventId(e.target.value)}
                                         required
                                     >
-                                        <option value="">Choose an event...</option>
+                                        <option value="" style={{ backgroundColor: '#1e1e1e', color: '#ffffff' }}>Choose an event...</option>
                                         {eventIds.map((id) => (
-                                            <EventOption key={id} eventId={id} hubClient={hubClient} />
+                                            <option key={id} value={id} style={{ backgroundColor: '#1e1e1e', color: '#ffffff' }}>
+                                                {eventsMap[id]?.name || `Event ${id.slice(0, 8)}...`}
+                                            </option>
                                         ))}
                                     </select>
                                     <ChevronDown size={18} style={styles.selectIcon} />
@@ -350,10 +415,10 @@ const Mint = () => {
                                 <div style={styles.eventPreview}>
                                     <h4 style={styles.eventPreviewTitle}>{selectedEvent.name}</h4>
                                     <div style={styles.eventMeta}>
-                                        {selectedEvent.date && (
+                                        {selectedEvent.startTime && (
                                             <div style={styles.metaItem}>
                                                 <Calendar size={14} style={{ color: '#6366f1' }} />
-                                                {new Date(selectedEvent.date).toLocaleDateString('en-US', {
+                                                {new Date(selectedEvent.startTime * 1000).toLocaleDateString('en-US', {
                                                     weekday: 'long',
                                                     year: 'numeric',
                                                     month: 'long',
@@ -369,7 +434,7 @@ const Mint = () => {
                                         )}
                                         <div style={styles.metaItem}>
                                             <Users size={14} style={{ color: '#10b981' }} />
-                                            {selectedEvent.availableTickets} tickets available
+                                            {availableTickets} tickets available
                                         </div>
                                     </div>
                                 </div>
@@ -386,17 +451,6 @@ const Mint = () => {
                                 />
                                 <p style={styles.hint}>Leave blank for General Admission</p>
                             </div>
-
-                            {/* Price Box */}
-                            {selectedEvent?.ticketPrice && (
-                                <div style={styles.priceBox}>
-                                    <span style={styles.priceLabel}>Ticket Price</span>
-                                    <span style={styles.priceValue}>
-                                        <DollarSign size={18} />
-                                        {selectedEvent.ticketPrice} tokens
-                                    </span>
-                                </div>
-                            )}
 
                             {/* Submit Button */}
                             <button

@@ -3,17 +3,23 @@ import express from 'express';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import fetch from 'node-fetch';
+import dotenv from 'dotenv';
+
+// Load environment variables - .env.local takes priority
+dotenv.config({ path: '.env.local', override: true });
+dotenv.config({ path: '.env' });
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
 
 // Linera service configuration
 const NODE_SERVICE_PORT = process.env.LINERA_SERVICE_PORT || 8080;
-const HUB_CHAIN_ID = process.env.VITE_MARKETPLACE_CHAIN_ID;
+const CHAIN_ID = process.env.VITE_MARKETPLACE_CHAIN_ID;
 const APP_ID = process.env.VITE_LINERA_APPLICATION_ID;
 
-// Hub application URL - use env for production domain, fallback to localhost for dev
-const HUB_APP_URL = process.env.VITE_HUB_APP_URL || `http://localhost:${NODE_SERVICE_PORT}/chains/${HUB_CHAIN_ID}/applications/${APP_ID}`;
+// Hub application URL - use env for production, fallback to localhost for dev
+const HUB_APP_URL = process.env.VITE_HUB_APP_URL || 
+  `http://localhost:${NODE_SERVICE_PORT}/chains/${CHAIN_ID}/applications/${APP_ID}`;
 
 // Add COOP/COEP headers for SharedArrayBuffer support (needed for crypto operations)
 app.use((req, res, next) => {
@@ -33,14 +39,31 @@ app.use(express.json());
 app.post('/api/hub', async (req, res) => {
   try {
     console.log('Hub API request:', JSON.stringify(req.body).substring(0, 100));
+    console.log('Fetching from:', HUB_APP_URL);
     const response = await fetch(HUB_APP_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'ngrok-skip-browser-warning': '69420',  // Skip ngrok interstitial page
+      },
       body: JSON.stringify(req.body),
     });
-    const data = await response.json();
-    console.log('Hub API response:', JSON.stringify(data).substring(0, 100));
-    res.json(data);
+    
+    const text = await response.text();
+    console.log('Raw response:', text.substring(0, 200));
+    
+    try {
+      const data = JSON.parse(text);
+      console.log('Hub API response:', JSON.stringify(data).substring(0, 100));
+      res.json(data);
+    } catch (parseErr) {
+      console.error('JSON parse error - response was HTML:', text.substring(0, 500));
+      res.status(502).json({ 
+        error: 'Invalid response from hub',
+        message: 'Received HTML instead of JSON. Check if ngrok tunnel is active.'
+      });
+    }
   } catch (err) {
     console.error('Hub API error:', err.message);
     res.status(503).json({ 
@@ -123,8 +146,6 @@ const port = process.env.PORT || 5173;
 app.listen(port, '0.0.0.0', () => {
   console.log(`\n🎫 RoyalInera Ticket Marketplace`);
   console.log(`   Frontend: http://localhost:${port}`);
-  console.log(`   Linera Service: http://localhost:${NODE_SERVICE_PORT}`);
-  console.log(`   Hub Chain: ${HUB_CHAIN_ID.substring(0, 16)}...`);
-  console.log(`   App ID: ${APP_ID.substring(0, 16)}...`);
-  console.log(`\n   Make sure to run: linera service --port ${NODE_SERVICE_PORT}\n`);
+  console.log(`   Hub API: ${HUB_APP_URL.substring(0, 50)}...`);
+  console.log(`\n   Make sure Linera service is running\n`);
 });

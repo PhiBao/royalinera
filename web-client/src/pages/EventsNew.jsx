@@ -17,21 +17,38 @@ const GET_EVENTS = gql`
 const GET_EVENT = gql`
   query GetEvent($eventId: String!) {
     event(eventId: $eventId) {
-      eventId
+      id { value }
       name
-      date
+      description
       venue
-      totalTickets
-      availableTickets
-      ticketPrice
+      startTime
       organizerChain
+      royaltyBps
+      maxTickets
+      mintedTickets
     }
   }
 `;
 
 const CREATE_EVENT = gql`
-  mutation CreateEvent($name: String!, $date: String!, $venue: String!, $totalTickets: Int!, $ticketPrice: String!) {
-    createEvent(name: $name, date: $date, venue: $venue, totalTickets: $totalTickets, ticketPrice: $ticketPrice)
+  mutation CreateEvent(
+    $eventId: String!, 
+    $name: String!, 
+    $description: String!, 
+    $venue: String!, 
+    $startTime: Int!, 
+    $royaltyBps: Int!, 
+    $maxTickets: Int!
+  ) {
+    createEvent(
+      eventId: $eventId, 
+      name: $name, 
+      description: $description, 
+      venue: $venue, 
+      startTime: $startTime, 
+      royaltyBps: $royaltyBps, 
+      maxTickets: $maxTickets
+    )
   }
 `;
 
@@ -250,33 +267,89 @@ const Events = () => {
     const { hubClient } = useGraphQL();
     
     const [showCreateModal, setShowCreateModal] = useState(false);
+    const [creating, setCreating] = useState(false);
     const [formData, setFormData] = useState({
         name: '',
+        description: '',
         date: '',
         venue: '',
         totalTickets: '',
-        ticketPrice: '',
+        royaltyBps: '500',
     });
 
     const { data, loading, refetch } = useQuery(GET_EVENTS, {
         client: hubClient,
     });
 
-    const [createEvent, { loading: creating }] = useMutation(CREATE_EVENT, {
+    const [createEventMutation] = useMutation(CREATE_EVENT, {
         client: hubClient,
         fetchPolicy: 'no-cache',
-        onCompleted: () => {
-            toast.success('Event created successfully!');
-            setShowCreateModal(false);
-            setFormData({ name: '', date: '', venue: '', totalTickets: '', ticketPrice: '' });
-            refetch();
-        },
-        onError: (err) => toast.error(`Failed to create event: ${err.message}`),
     });
+
+    // Retry wrapper for mutations with testnet timestamp issues
+    const withRetry = async (mutationFn, variables, options = {}) => {
+        const { maxRetries = 5, delay = 3000, onSuccess, onError } = options;
+        const toastId = toast.loading('Processing...');
+        
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                const result = await mutationFn({ variables });
+                
+                // Check if there's an error in the response
+                if (result.errors && result.errors.length > 0) {
+                    const errorMsg = result.errors[0].message || 'Unknown error';
+                    const isRetryable = errorMsg.includes('timestamp') || 
+                                       errorMsg.includes('future') || 
+                                       errorMsg.includes('quorum') ||
+                                       errorMsg.includes('malformed');
+                    
+                    if (isRetryable && attempt < maxRetries) {
+                        toast.loading(`Retry ${attempt}/${maxRetries}... waiting ${delay/1000}s`, { id: toastId });
+                        await new Promise(r => setTimeout(r, delay));
+                        continue;
+                    }
+                    throw new Error(errorMsg);
+                }
+                
+                // Success!
+                toast.success('Success!', { id: toastId });
+                if (onSuccess) onSuccess(result);
+                return result;
+                
+            } catch (err) {
+                const errorMsg = err.message || 'Unknown error';
+                const isRetryable = errorMsg.includes('timestamp') || 
+                                   errorMsg.includes('future') || 
+                                   errorMsg.includes('quorum') ||
+                                   errorMsg.includes('malformed');
+                
+                if (isRetryable && attempt < maxRetries) {
+                    toast.loading(`Retry ${attempt}/${maxRetries}... waiting ${delay/1000}s`, { id: toastId });
+                    await new Promise(r => setTimeout(r, delay));
+                    continue;
+                }
+                
+                // Final failure
+                toast.error(`Failed: ${errorMsg}`, { id: toastId });
+                if (onError) onError(err);
+                return null;
+            }
+        }
+    };
 
     const eventIds = useMemo(() => {
         if (!data?.events) return [];
+        // Backend returns object {eventId: Event}, convert to array of IDs
+        if (typeof data.events === 'object' && !Array.isArray(data.events)) {
+            return Object.keys(data.events);
+        }
         return Array.isArray(data.events) ? data.events : [];
+    }, [data]);
+    
+    // Get full event data from the object
+    const eventsMap = useMemo(() => {
+        if (!data?.events || Array.isArray(data.events)) return {};
+        return data.events;
     }, [data]);
 
     const handleCreate = async (e) => {
@@ -285,12 +358,28 @@ const Events = () => {
             openWalletModal();
             return;
         }
-        await createEvent({
-            variables: {
-                ...formData,
-                totalTickets: parseInt(formData.totalTickets),
+        setCreating(true);
+        // Generate unique event ID
+        const eventId = `event_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        // Convert date to Unix timestamp
+        const startTime = Math.floor(new Date(formData.date).getTime() / 1000);
+        
+        await withRetry(createEventMutation, {
+            eventId,
+            name: formData.name,
+            description: formData.description || formData.name,
+            venue: formData.venue,
+            startTime,
+            royaltyBps: parseInt(formData.royaltyBps) || 500,
+            maxTickets: parseInt(formData.totalTickets),
+        }, {
+            onSuccess: () => {
+                setShowCreateModal(false);
+                setFormData({ name: '', description: '', date: '', venue: '', totalTickets: '', royaltyBps: '500' });
+                refetch();
             },
         });
+        setCreating(false);
     };
 
     const handleCreateClick = () => {
@@ -383,6 +472,15 @@ const Events = () => {
                                         required
                                     />
                                 </div>
+                                <div style={styles.formGroup}>
+                                    <label style={styles.label}>Description</label>
+                                    <input
+                                        style={styles.input}
+                                        value={formData.description}
+                                        onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                                        placeholder="An amazing music event..."
+                                    />
+                                </div>
                                 <div style={styles.formRow}>
                                     <div style={styles.formGroup}>
                                         <label style={styles.label}>Date</label>
@@ -419,13 +517,15 @@ const Events = () => {
                                         />
                                     </div>
                                     <div style={styles.formGroup}>
-                                        <label style={styles.label}>Ticket Price</label>
+                                        <label style={styles.label}>Royalty (%)</label>
                                         <input
                                             style={styles.input}
-                                            value={formData.ticketPrice}
-                                            onChange={(e) => setFormData({ ...formData, ticketPrice: e.target.value })}
-                                            placeholder="0.5"
-                                            required
+                                            type="number"
+                                            min="0"
+                                            max="10000"
+                                            value={formData.royaltyBps}
+                                            onChange={(e) => setFormData({ ...formData, royaltyBps: e.target.value })}
+                                            placeholder="500 (5%)"
                                         />
                                     </div>
                                 </div>
@@ -457,7 +557,8 @@ const EventCard = ({ eventId, hubClient, onMint }) => {
     });
 
     const event = data?.event;
-    const soldOut = event && event.availableTickets <= 0;
+    const availableTickets = event ? event.maxTickets - event.mintedTickets : 0;
+    const soldOut = event && availableTickets <= 0;
 
     if (loading) {
         return (
@@ -472,20 +573,20 @@ const EventCard = ({ eventId, hubClient, onMint }) => {
         );
     }
 
+    // Format startTime (Unix timestamp) to date
+    const eventDate = event?.startTime ? new Date(event.startTime * 1000) : null;
+
     return (
         <div style={styles.card}>
             <div style={styles.cardImage}>
                 <Calendar size={56} style={{ color: 'rgba(255,255,255,0.3)' }} />
-                {event?.ticketPrice && (
-                    <div style={styles.priceBadge}>{event.ticketPrice} tokens</div>
-                )}
                 {event && (
                     <div style={{
                         ...styles.availBadge,
                         backgroundColor: soldOut ? 'rgba(239,68,68,0.8)' : 'rgba(0,0,0,0.6)',
                     }}>
                         <Ticket size={12} />
-                        {soldOut ? 'Sold Out' : `${event.availableTickets} left`}
+                        {soldOut ? 'Sold Out' : `${availableTickets} left`}
                     </div>
                 )}
             </div>
@@ -493,10 +594,10 @@ const EventCard = ({ eventId, hubClient, onMint }) => {
                 <h3 style={styles.cardTitle}>{event?.name || 'Unknown Event'}</h3>
                 
                 <div style={styles.cardMeta}>
-                    {event?.date && (
+                    {eventDate && (
                         <div style={styles.metaItem}>
                             <Clock size={16} style={{ color: '#6366f1' }} />
-                            {new Date(event.date).toLocaleDateString('en-US', { 
+                            {eventDate.toLocaleDateString('en-US', { 
                                 weekday: 'long',
                                 year: 'numeric',
                                 month: 'long',
@@ -510,10 +611,10 @@ const EventCard = ({ eventId, hubClient, onMint }) => {
                             {event.venue}
                         </div>
                     )}
-                    {event?.totalTickets && (
+                    {event?.maxTickets && (
                         <div style={styles.metaItem}>
                             <Users size={16} style={{ color: '#10b981' }} />
-                            {event.totalTickets} total capacity
+                            {event.maxTickets} total capacity
                         </div>
                     )}
                 </div>

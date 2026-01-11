@@ -5,7 +5,7 @@ import { gql } from '@apollo/client/core';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { useWallet } from '../providers/WalletProvider';
 import { useGraphQL } from '../providers/GraphQLProvider';
-import { Ticket as TicketIcon, Send, DollarSign, Tag, X, Wallet, Loader2, RefreshCw } from 'lucide-react';
+import { Ticket as TicketIcon, Send, DollarSign, Tag, X, Wallet, Loader2, RefreshCw, AlertTriangle, XCircle } from 'lucide-react';
 
 // GraphQL Queries and Mutations
 const GET_MY_TICKETS = gql`
@@ -14,28 +14,49 @@ const GET_MY_TICKETS = gql`
   }
 `;
 
+const GET_TICKETS_BY_OWNER = gql`
+  query GetTicketsByOwner($owner: String!) {
+    ticketsByOwner(owner: $owner)
+  }
+`;
+
+const GET_LISTINGS = gql`
+  query GetListings {
+    listings
+  }
+`;
+
 const GET_TICKET = gql`
   query GetTicket($ticketId: String!) {
     ticket(ticketId: $ticketId) {
       ticketId
+      eventId { value }
       eventName
       seat
       ownerChain
+      organizerChain
       minterChain
+      royaltyBps
       lastSalePrice
     }
   }
 `;
 
 const TRANSFER_TICKET = gql`
-  mutation TransferTicket($ticketId: String!, $toChain: String!, $toOwner: String!) {
-    transferTicket(ticketId: $ticketId, toChain: $toChain, toOwner: $toOwner)
+  mutation TransferTicket($ticketId: String!, $newOwner: String!, $buyerChain: String!, $salePrice: String) {
+    transferTicket(ticketId: $ticketId, newOwner: $newOwner, buyerChain: $buyerChain, salePrice: $salePrice)
   }
 `;
 
 const LIST_FOR_SALE = gql`
-  mutation CreateListing($ticketId: String!, $price: String!) {
-    createListing(ticketId: $ticketId, price: $price)
+  mutation CreateListing($ticketId: String!, $seller: String!, $price: String!) {
+    createListing(ticketId: $ticketId, seller: $seller, price: $price)
+  }
+`;
+
+const CANCEL_LISTING = gql`
+  mutation CancelListing($ticketId: String!, $seller: String!) {
+    cancelListing(ticketId: $ticketId, seller: $seller)
   }
 `;
 
@@ -219,62 +240,149 @@ const styles = {
 
 const MyTickets = () => {
     const navigate = useNavigate();
-    const { isConnected, openWalletModal } = useWallet();
+    const { isConnected, openWalletModal, chainId: userChainId, hubChainId, address: userAddress } = useWallet();
     const { hubClient } = useGraphQL();
     
     const [actionTicket, setActionTicket] = useState(null);
     const [actionType, setActionType] = useState(null);
-    const [transferForm, setTransferForm] = useState({ toChain: '', toOwner: '' });
+    const [transferForm, setTransferForm] = useState({ toChain: '', toAddress: '' });
     const [listForm, setListForm] = useState({ price: '' });
 
-    const { data, loading, refetch } = useQuery(GET_MY_TICKETS, {
+    // Use ticketsByOwner query to filter by wallet address (works in demo mode)
+    const { data, loading, refetch } = useQuery(GET_TICKETS_BY_OWNER, {
         client: hubClient,
-        skip: !isConnected,
+        variables: { owner: userAddress || '' },
+        skip: !isConnected || !userAddress,
     });
 
-    const [transferTicket, { loading: transferring }] = useMutation(TRANSFER_TICKET, {
+    // Fetch all listings to check which tickets are listed
+    const { data: listingsData, refetch: refetchListings } = useQuery(GET_LISTINGS, {
         client: hubClient,
-        fetchPolicy: 'no-cache',
-        onCompleted: () => {
-            toast.success('Ticket transferred successfully!');
-            closeModal();
-            refetch();
-        },
-        onError: (err) => toast.error(`Transfer failed: ${err.message}`),
     });
 
-    const [listForSale, { loading: listing }] = useMutation(LIST_FOR_SALE, {
+    // Build a map of ticketId -> listing info
+    const listingsMap = useMemo(() => {
+        if (!listingsData?.listings) return {};
+        if (typeof listingsData.listings === 'object' && !Array.isArray(listingsData.listings)) {
+            return listingsData.listings;
+        }
+        return {};
+    }, [listingsData]);
+
+    const handleRefetch = () => {
+        refetch();
+        refetchListings();
+    };
+
+    // Retry wrapper for mutations with testnet timestamp issues
+    const withRetry = async (mutationFn, variables, options = {}) => {
+        const { maxRetries = 5, delay = 3000, onSuccess, onError, setLoading } = options;
+        const toastId = toast.loading('Processing...');
+        
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                const result = await mutationFn({ variables });
+                
+                // Check if there's an error in the response
+                if (result.errors && result.errors.length > 0) {
+                    const errorMsg = result.errors[0].message || 'Unknown error';
+                    const isRetryable = errorMsg.includes('timestamp') || 
+                                       errorMsg.includes('future') || 
+                                       errorMsg.includes('quorum') ||
+                                       errorMsg.includes('malformed');
+                    
+                    if (isRetryable && attempt < maxRetries) {
+                        toast.loading(`Retry ${attempt}/${maxRetries}... waiting ${delay/1000}s`, { id: toastId });
+                        await new Promise(r => setTimeout(r, delay));
+                        continue;
+                    }
+                    throw new Error(errorMsg);
+                }
+                
+                // Success!
+                toast.success('Success!', { id: toastId });
+                if (onSuccess) onSuccess(result);
+                return result;
+                
+            } catch (err) {
+                const errorMsg = err.message || 'Unknown error';
+                const isRetryable = errorMsg.includes('timestamp') || 
+                                   errorMsg.includes('future') || 
+                                   errorMsg.includes('quorum') ||
+                                   errorMsg.includes('malformed');
+                
+                if (isRetryable && attempt < maxRetries) {
+                    toast.loading(`Retry ${attempt}/${maxRetries}... waiting ${delay/1000}s`, { id: toastId });
+                    await new Promise(r => setTimeout(r, delay));
+                    continue;
+                }
+                
+                // Final failure
+                toast.error(`Failed: ${errorMsg}`, { id: toastId });
+                if (onError) onError(err);
+                if (setLoading) setLoading(false);
+                return null;
+            }
+        }
+    };
+
+    const [transferTicketMutation] = useMutation(TRANSFER_TICKET, {
         client: hubClient,
         fetchPolicy: 'no-cache',
-        onCompleted: () => {
-            toast.success('Ticket listed for sale!');
-            closeModal();
-            navigate('/marketplace');
-        },
-        onError: (err) => toast.error(`Listing failed: ${err.message}`),
     });
+
+    const [listForSaleMutation] = useMutation(LIST_FOR_SALE, {
+        client: hubClient,
+        fetchPolicy: 'no-cache',
+    });
+
+    const [cancelListingMutation] = useMutation(CANCEL_LISTING, {
+        client: hubClient,
+        fetchPolicy: 'no-cache',
+    });
+
+    // State for loading indicators
+    const [transferring, setTransferring] = useState(false);
+    const [listing, setListing] = useState(false);
+
+    const handleCancelListing = async (ticketId) => {
+        await withRetry(cancelListingMutation, { ticketId, seller: userAddress }, {
+            onSuccess: () => handleRefetch(),
+        });
+    };
 
     const ticketIds = useMemo(() => {
-        if (!data?.myTickets) return [];
-        return Array.isArray(data.myTickets) ? data.myTickets : [];
+        if (!data?.ticketsByOwner) return [];
+        return Array.isArray(data.ticketsByOwner) ? data.ticketsByOwner : [];
     }, [data]);
 
     const closeModal = () => {
         setActionTicket(null);
         setActionType(null);
-        setTransferForm({ toChain: '', toOwner: '' });
+        setTransferForm({ toChain: '', toAddress: '' });
         setListForm({ price: '' });
     };
 
     const handleTransfer = async (e) => {
         e.preventDefault();
-        if (!transferForm.toChain || !transferForm.toOwner) {
-            toast.error('Please fill in all fields');
+        if (!transferForm.toAddress) {
+            toast.error('Please enter recipient wallet address');
             return;
         }
-        await transferTicket({
-            variables: { ticketId: actionTicket, ...transferForm },
+        setTransferring(true);
+        await withRetry(transferTicketMutation, { 
+            ticketId: actionTicket, 
+            newOwner: transferForm.toAddress,
+            buyerChain: transferForm.toChain || userChainId,
+            salePrice: null,
+        }, {
+            onSuccess: () => {
+                closeModal();
+                handleRefetch();
+            },
+            setLoading: setTransferring,
         });
+        setTransferring(false);
     };
 
     const handleList = async (e) => {
@@ -283,9 +391,19 @@ const MyTickets = () => {
             toast.error('Please enter a valid price');
             return;
         }
-        await listForSale({
-            variables: { ticketId: actionTicket, price: listForm.price },
+        setListing(true);
+        await withRetry(listForSaleMutation, { 
+            ticketId: actionTicket, 
+            seller: userAddress, 
+            price: listForm.price 
+        }, {
+            onSuccess: () => {
+                closeModal();
+                navigate('/marketplace');
+            },
+            setLoading: setListing,
         });
+        setListing(false);
     };
 
     if (!isConnected) {
@@ -317,8 +435,9 @@ const MyTickets = () => {
             <div style={styles.pageHeader}>
                 <h1 style={styles.title}>My Tickets</h1>
                 <p style={styles.subtitle}>{ticketIds.length} ticket{ticketIds.length !== 1 ? 's' : ''} in your wallet</p>
+                
                 <div style={styles.headerActions}>
-                    <button onClick={() => refetch()} style={{ ...styles.btn, ...styles.btnSecondary, flex: 'none' }}>
+                    <button onClick={handleRefetch} style={{ ...styles.btn, ...styles.btnSecondary, flex: 'none' }}>
                         <RefreshCw size={16} />
                         Refresh
                     </button>
@@ -345,9 +464,11 @@ const MyTickets = () => {
                         <TicketCard
                             key={ticketId}
                             ticketId={ticketId}
+                            listing={listingsMap[ticketId]}
                             hubClient={hubClient}
                             onTransfer={() => { setActionTicket(ticketId); setActionType('transfer'); }}
                             onList={() => { setActionTicket(ticketId); setActionType('list'); }}
+                            onCancelListing={handleCancelListing}
                         />
                     ))}
                 </div>
@@ -369,25 +490,28 @@ const MyTickets = () => {
                         </div>
                         <form onSubmit={handleTransfer}>
                             <div style={styles.modalBody}>
-                                <div style={styles.formGroup}>
-                                    <label style={styles.label}>Recipient Chain ID</label>
-                                    <input
-                                        style={styles.input}
-                                        value={transferForm.toChain}
-                                        onChange={(e) => setTransferForm({ ...transferForm, toChain: e.target.value })}
-                                        placeholder="Chain ID of recipient"
-                                        required
-                                    />
+                                <div style={{
+                                    padding: '12px',
+                                    backgroundColor: 'rgba(99, 102, 241, 0.1)',
+                                    borderRadius: '8px',
+                                    marginBottom: '16px',
+                                    fontSize: '0.8rem',
+                                    color: '#a0a0a0',
+                                    lineHeight: '1.5',
+                                }}>
+                                    <strong style={{ color: '#6366f1' }}>Note:</strong> Enter the recipient's wallet address. 
+                                    In demo mode, you can transfer between demo accounts (e.g., 0x1111...1111, 0x2222...2222).
                                 </div>
                                 <div style={styles.formGroup}>
-                                    <label style={styles.label}>Recipient Owner</label>
+                                    <label style={styles.label}>Recipient Wallet Address</label>
                                     <input
                                         style={styles.input}
-                                        value={transferForm.toOwner}
-                                        onChange={(e) => setTransferForm({ ...transferForm, toOwner: e.target.value })}
-                                        placeholder="Owner address"
+                                        value={transferForm.toAddress}
+                                        onChange={(e) => setTransferForm({ ...transferForm, toAddress: e.target.value })}
+                                        placeholder="e.g. 0x2222222222222222222222222222222222222222"
                                         required
                                     />
+                                    <p style={styles.hint}>The recipient's Ethereum wallet address</p>
                                 </div>
                             </div>
                             <div style={styles.modalFooter}>
@@ -455,13 +579,15 @@ const MyTickets = () => {
 };
 
 // Ticket Card Component
-const TicketCard = ({ ticketId, hubClient, onTransfer, onList }) => {
+const TicketCard = ({ ticketId, listing, hubClient, onTransfer, onList, onCancelListing }) => {
     const { data, loading } = useQuery(GET_TICKET, {
         client: hubClient,
         variables: { ticketId },
     });
 
     const ticket = data?.ticket;
+    // Check if ticket is listed - listing is passed from parent, status must be 'Active'
+    const isListed = listing && listing.status === 'Active';
 
     if (loading) {
         return (
@@ -479,21 +605,69 @@ const TicketCard = ({ ticketId, hubClient, onTransfer, onList }) => {
         <div style={styles.card}>
             <div style={styles.cardImage}>
                 <TicketIcon size={48} style={{ color: 'rgba(255,255,255,0.3)' }} />
+                {isListed && (
+                    <div style={{
+                        position: 'absolute',
+                        top: '12px',
+                        right: '12px',
+                        background: 'linear-gradient(135deg, #10b981, #059669)',
+                        color: '#ffffff',
+                        padding: '4px 10px',
+                        borderRadius: '12px',
+                        fontSize: '0.75rem',
+                        fontWeight: '600',
+                    }}>
+                        Listed: {listing.price}
+                    </div>
+                )}
             </div>
             <div style={styles.cardContent}>
                 <h3 style={styles.cardTitle}>{ticket?.eventName || 'Unknown Event'}</h3>
                 <p style={styles.cardSubtitle}>{ticket?.seat || 'General Admission'}</p>
                 <div style={styles.ticketId}>ID: {ticketId.slice(0, 20)}...</div>
-                <div style={styles.cardActions}>
-                    <button onClick={onTransfer} style={{ ...styles.btn, ...styles.btnSecondary }}>
-                        <Send size={16} />
-                        Transfer
-                    </button>
-                    <button onClick={onList} style={{ ...styles.btn, ...styles.btnPrimary }}>
-                        <Tag size={16} />
-                        Sell
-                    </button>
-                </div>
+                
+                {isListed ? (
+                    <div>
+                        <div style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '8px',
+                            padding: '12px',
+                            backgroundColor: 'rgba(234, 179, 8, 0.1)',
+                            borderRadius: '8px',
+                            marginBottom: '12px',
+                            color: '#eab308',
+                            fontSize: '0.75rem',
+                        }}>
+                            <AlertTriangle size={14} />
+                            <span>Cancel listing before transferring</span>
+                        </div>
+                        <button 
+                            onClick={() => onCancelListing(ticketId)} 
+                            style={{ 
+                                ...styles.btn, 
+                                width: '100%',
+                                backgroundColor: 'rgba(239, 68, 68, 0.2)',
+                                color: '#ef4444',
+                                border: '1px solid rgba(239, 68, 68, 0.3)',
+                            }}
+                        >
+                            <XCircle size={16} />
+                            Cancel Listing
+                        </button>
+                    </div>
+                ) : (
+                    <div style={styles.cardActions}>
+                        <button onClick={onTransfer} style={{ ...styles.btn, ...styles.btnSecondary }}>
+                            <Send size={16} />
+                            Transfer
+                        </button>
+                        <button onClick={onList} style={{ ...styles.btn, ...styles.btnPrimary }}>
+                            <Tag size={16} />
+                            Sell
+                        </button>
+                    </div>
+                )}
             </div>
         </div>
     );

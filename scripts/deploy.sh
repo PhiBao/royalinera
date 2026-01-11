@@ -2,7 +2,9 @@
 set -euo pipefail
 
 # Linera Ticketing App Deployment Script
-# Usage: ./scripts/deploy.sh [--clean]
+# Usage: ./scripts/deploy.sh [--clean] [--start]
+#   --clean  Delete existing wallet and start fresh
+#   --start  Start linera service after deployment
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVICE_PORT="${SERVICE_PORT:-8080}"
@@ -185,14 +187,6 @@ VITE_MARKETPLACE_CHAIN_ID=$CHAIN_ID
 EOF
 echo "  📝 Frontend config: $ENV_FILE"
 
-# Update server.js defaults
-SERVER_JS="$ROOT_DIR/web-client/server.js"
-if [ -f "$SERVER_JS" ]; then
-    sed -i "s/const HUB_CHAIN_ID = process.env.HUB_CHAIN_ID || '[^']*'/const HUB_CHAIN_ID = process.env.HUB_CHAIN_ID || '$CHAIN_ID'/" "$SERVER_JS"
-    sed -i "s/const APP_ID = process.env.APP_ID || '[^']*'/const APP_ID = process.env.APP_ID || '$APP_ID'/" "$SERVER_JS"
-    echo "  📝 server.js updated"
-fi
-
 echo ""
 echo "=========================================="
 echo "  Next Steps"
@@ -207,3 +201,14 @@ echo ""
 echo "  3. Open browser:"
 echo "     http://localhost:5173"
 echo ""
+
+# Step 6: Start Linera service (optional, with --start flag)
+if [[ "${2:-}" == "--start" ]] || [[ "${1:-}" == "--start" ]]; then
+    echo "[6/6] Starting Linera service..."
+    linera service --port $SERVICE_PORT &
+    LINERA_PID=$!
+    echo "   ✅ Linera service started (PID: $LINERA_PID)"
+    echo "   Service running at http://localhost:$SERVICE_PORT"
+    echo ""
+    echo "   To stop: kill $LINERA_PID"
+fi

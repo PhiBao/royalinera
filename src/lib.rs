@@ -66,11 +66,10 @@ impl ServiceAbi for TicketingAbi {
 }
 
 /// Operations supported by the ticketing contract.
-/// NOTE: No owner/organizer parameters - the contract derives the caller from runtime.chain_id()
+/// Operations include owner/seller address for demo mode (shared hub chain).
 #[derive(Debug, Deserialize, Serialize)]
 pub enum Operation {
     /// Registers a new event with royalty terms.
-    /// Caller (from chain_id) becomes the organizer.
     CreateEvent {
         event_id: EventId,
         name: String,
@@ -81,38 +80,47 @@ pub enum Operation {
         max_tickets: u32,
     },
     /// Mints a ticket for a seat within an event.
-    /// Caller must be the event organizer.
+    /// owner: wallet address of the minter (for demo mode)
     MintTicket {
         event_id: EventId,
         seat: String,
         blob_hash: DataBlobHash,
+        owner: String,
     },
     /// Transfers a ticket that currently resides on this chain.
-    /// Caller must own the ticket.
+    /// owner: wallet address of the current owner (must match ticket.owner)
     TransferTicket {
         ticket_id: TicketId,
         buyer_chain: String,
+        new_owner: String,
         sale_price: Option<u128>,
     },
     /// Claims a ticket that resides on a remote chain.
     ClaimTicket {
         source_chain: String,
         ticket_id: TicketId,
+        new_owner: String,
         sale_price: Option<u128>,
     },
     /// Create a marketplace listing for a ticket owned by the caller.
+    /// seller: wallet address of the seller (must match ticket.owner)
     CreateListing {
         ticket_id: TicketId,
         price: u128,
+        seller: String,
     },
     /// Cancel an existing listing (only seller).
+    /// seller: wallet address of the seller (must match listing.seller)
     CancelListing {
         ticket_id: TicketId,
+        seller: String,
     },
     /// Buy an active listing.
+    /// buyer: wallet address of the buyer
     BuyListing {
         ticket_id: TicketId,
         price: u128,
+        buyer: String,
     },
     /// Subscribe to the hub chain's marketplace event stream.
     /// This enables the user's chain to receive events, tickets, and listings from the hub.
@@ -134,6 +142,7 @@ pub enum Message {
         source_chain: String,
         ticket_id: TicketId,
         requester_chain: String,
+        new_owner: String,
         sale_price: Option<u128>,
     },
     
@@ -162,16 +171,19 @@ pub enum Message {
     CancelListingOnHub {
         ticket_id: TicketId,
         seller_chain: String,
+        seller: String,
     },
     /// Forward listing purchase to the hub
     BuyListingOnHub {
         ticket_id: TicketId,
         buyer_chain: String,
+        buyer: String,
         price: u128,
     },
     /// Forward mint ticket request to hub (hub does actual minting)
     MintTicketRequest {
         minter_chain: String,
+        owner: String,
         event_id: EventId,
         seat: String,
         blob_hash: DataBlobHash,
@@ -210,6 +222,8 @@ pub struct Ticket {
     pub organizer_chain: String,
     /// Current owner chain
     pub owner_chain: String,
+    /// Current owner address (wallet address for demo mode)
+    pub owner: String,
     /// Minter chain
     pub minter_chain: String,
     pub royalty_bps: u16,
@@ -224,6 +238,8 @@ pub struct Listing {
     pub ticket_id: TicketId,
     /// Seller chain
     pub seller_chain: String,
+    /// Seller address (wallet address for demo mode)
+    pub seller: String,
     pub price: u128,
     pub status: ListingStatus,
 }
@@ -245,6 +261,7 @@ pub struct TicketOutput {
     pub seat: String,
     pub organizer_chain: String,
     pub owner_chain: String,
+    pub owner: String,
     pub minter_chain: String,
     pub royalty_bps: u16,
     pub payload: Vec<u8>,
@@ -262,6 +279,7 @@ impl TicketOutput {
             seat: ticket.seat,
             organizer_chain: ticket.organizer_chain,
             owner_chain: ticket.owner_chain,
+            owner: ticket.owner,
             minter_chain: ticket.minter_chain,
             royalty_bps: ticket.royalty_bps,
             payload,

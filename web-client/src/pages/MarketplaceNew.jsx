@@ -4,7 +4,7 @@ import { gql } from '@apollo/client/core';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { useWallet } from '../providers/WalletProvider';
 import { useGraphQL } from '../providers/GraphQLProvider';
-import { ShoppingBag, Ticket, DollarSign, Wallet, Loader2, RefreshCw, User, Hash } from 'lucide-react';
+import { ShoppingBag, Ticket, DollarSign, Wallet, Loader2, RefreshCw, User, Hash, XCircle } from 'lucide-react';
 
 // GraphQL
 const GET_LISTINGS = gql`
@@ -13,30 +13,31 @@ const GET_LISTINGS = gql`
   }
 `;
 
-const GET_LISTING_DETAILS = gql`
-  query GetListing($ticketId: String!) {
-    listing(ticketId: $ticketId) {
-      ticketId
-      price
-      sellerChain
-    }
-  }
-`;
-
 const GET_TICKET = gql`
   query GetTicket($ticketId: String!) {
     ticket(ticketId: $ticketId) {
       ticketId
+      eventId { value }
       eventName
       seat
       ownerChain
+      organizerChain
+      minterChain
+      royaltyBps
+      lastSalePrice
     }
   }
 `;
 
 const BUY_TICKET = gql`
-  mutation BuyTicket($ticketId: String!) {
-    buyTicket(ticketId: $ticketId)
+  mutation BuyListing($ticketId: String!, $buyer: String!, $price: String!) {
+    buyListing(ticketId: $ticketId, buyer: $buyer, price: $price)
+  }
+`;
+
+const CANCEL_LISTING = gql`
+  mutation CancelListing($ticketId: String!, $seller: String!) {
+    cancelListing(ticketId: $ticketId, seller: $seller)
   }
 `;
 
@@ -170,7 +171,7 @@ const styles = {
 };
 
 const Marketplace = () => {
-    const { isConnected, openWalletModal } = useWallet();
+    const { isConnected, openWalletModal, chainId: userChainId, address: userAddress } = useWallet();
     const { hubClient } = useGraphQL();
 
     const { data, loading, refetch } = useQuery(GET_LISTINGS, {
@@ -179,7 +180,17 @@ const Marketplace = () => {
 
     const listingIds = useMemo(() => {
         if (!data?.listings) return [];
+        // Backend returns object {ticketId: ListingInfo}, convert to array of IDs
+        if (typeof data.listings === 'object' && !Array.isArray(data.listings)) {
+            return Object.keys(data.listings);
+        }
         return Array.isArray(data.listings) ? data.listings : [];
+    }, [data]);
+    
+    // Get full listing data from the object
+    const listingsMap = useMemo(() => {
+        if (!data?.listings || Array.isArray(data.listings)) return {};
+        return data.listings;
     }, [data]);
 
     if (loading) {
@@ -219,10 +230,13 @@ const Marketplace = () => {
                         <ListingCard
                             key={ticketId}
                             ticketId={ticketId}
+                            listing={listingsMap[ticketId]}
                             hubClient={hubClient}
                             isConnected={isConnected}
                             openWalletModal={openWalletModal}
                             onBought={refetch}
+                            userChainId={userChainId}
+                            userAddress={userAddress}
                         />
                     ))}
                 </div>
@@ -234,32 +248,76 @@ const Marketplace = () => {
 };
 
 // Listing Card Component
-const ListingCard = ({ ticketId, hubClient, isConnected, openWalletModal, onBought }) => {
+const ListingCard = ({ ticketId, listing, hubClient, isConnected, openWalletModal, onBought, userChainId, userAddress }) => {
     const [buying, setBuying] = useState(false);
-
-    const { data: listingData, loading: listingLoading } = useQuery(GET_LISTING_DETAILS, {
-        client: hubClient,
-        variables: { ticketId },
-    });
+    const [cancelling, setCancelling] = useState(false);
 
     const { data: ticketData, loading: ticketLoading } = useQuery(GET_TICKET, {
         client: hubClient,
         variables: { ticketId },
     });
 
-    const [buyTicket] = useMutation(BUY_TICKET, {
+    const [buyTicketMutation] = useMutation(BUY_TICKET, {
         client: hubClient,
         fetchPolicy: 'no-cache',
-        onCompleted: () => {
-            toast.success('Ticket purchased successfully!');
-            setBuying(false);
-            onBought();
-        },
-        onError: (err) => {
-            toast.error(`Purchase failed: ${err.message}`);
-            setBuying(false);
-        },
     });
+
+    const [cancelListingMutation] = useMutation(CANCEL_LISTING, {
+        client: hubClient,
+        fetchPolicy: 'no-cache',
+    });
+
+    // Retry wrapper for mutations with testnet timestamp issues
+    const withRetry = async (mutationFn, variables, options = {}) => {
+        const { maxRetries = 5, delay = 3000, onSuccess, onError, setLoading } = options;
+        const toastId = toast.loading('Processing...');
+        
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                const result = await mutationFn({ variables });
+                
+                // Check if there's an error in the response
+                if (result.errors && result.errors.length > 0) {
+                    const errorMsg = result.errors[0].message || 'Unknown error';
+                    const isRetryable = errorMsg.includes('timestamp') || 
+                                       errorMsg.includes('future') || 
+                                       errorMsg.includes('quorum') ||
+                                       errorMsg.includes('malformed');
+                    
+                    if (isRetryable && attempt < maxRetries) {
+                        toast.loading(`Retry ${attempt}/${maxRetries}... waiting ${delay/1000}s`, { id: toastId });
+                        await new Promise(r => setTimeout(r, delay));
+                        continue;
+                    }
+                    throw new Error(errorMsg);
+                }
+                
+                // Success!
+                toast.success('Success!', { id: toastId });
+                if (onSuccess) onSuccess(result);
+                return result;
+                
+            } catch (err) {
+                const errorMsg = err.message || 'Unknown error';
+                const isRetryable = errorMsg.includes('timestamp') || 
+                                   errorMsg.includes('future') || 
+                                   errorMsg.includes('quorum') ||
+                                   errorMsg.includes('malformed');
+                
+                if (isRetryable && attempt < maxRetries) {
+                    toast.loading(`Retry ${attempt}/${maxRetries}... waiting ${delay/1000}s`, { id: toastId });
+                    await new Promise(r => setTimeout(r, delay));
+                    continue;
+                }
+                
+                // Final failure
+                toast.error(`Failed: ${errorMsg}`, { id: toastId });
+                if (onError) onError(err);
+                if (setLoading) setLoading(false);
+                return null;
+            }
+        }
+    };
 
     const handleBuy = async () => {
         if (!isConnected) {
@@ -267,14 +325,41 @@ const ListingCard = ({ ticketId, hubClient, isConnected, openWalletModal, onBoug
             return;
         }
         setBuying(true);
-        await buyTicket({ variables: { ticketId } });
+        const price = listing?.price || '0';
+        await withRetry(buyTicketMutation, { ticketId, buyer: userAddress, price }, {
+            onSuccess: () => {
+                setBuying(false);
+                onBought();
+            },
+            setLoading: setBuying,
+        });
+        setBuying(false);
     };
 
-    const loading = listingLoading || ticketLoading;
-    const listing = listingData?.listing;
-    const ticket = ticketData?.ticket;
+    const handleCancel = async () => {
+        if (!isConnected) {
+            openWalletModal();
+            return;
+        }
+        setCancelling(true);
+        await withRetry(cancelListingMutation, { ticketId, seller: userAddress }, {
+            onSuccess: () => {
+                setCancelling(false);
+                onBought();
+            },
+            setLoading: setCancelling,
+        });
+        setCancelling(false);
+    };
 
-    if (loading) {
+    const ticket = ticketData?.ticket;
+    
+    // Check if user owns this listing by comparing wallet addresses (seller field)
+    // This works even in demo mode where all users share the same hub chain
+    const isOwnListing = isConnected && listing?.seller && userAddress && 
+        listing.seller.toLowerCase() === userAddress.toLowerCase();
+
+    if (ticketLoading) {
         return (
             <div style={styles.loadingCard}>
                 <div style={{ height: '160px', backgroundColor: 'rgba(255,255,255,0.05)' }} />
@@ -296,6 +381,21 @@ const ListingCard = ({ ticketId, hubClient, isConnected, openWalletModal, onBoug
                         {listing.price}
                     </div>
                 )}
+                {isOwnListing && (
+                    <div style={{
+                        position: 'absolute',
+                        top: '12px',
+                        left: '12px',
+                        background: 'rgba(99, 102, 241, 0.9)',
+                        color: '#ffffff',
+                        padding: '4px 10px',
+                        borderRadius: '12px',
+                        fontSize: '0.75rem',
+                        fontWeight: '600',
+                    }}>
+                        Your Listing
+                    </div>
+                )}
             </div>
             <div style={styles.cardContent}>
                 <h3 style={styles.cardTitle}>{ticket?.eventName || 'Unknown Event'}</h3>
@@ -306,40 +406,66 @@ const ListingCard = ({ ticketId, hubClient, isConnected, openWalletModal, onBoug
                         <Hash size={14} />
                         <span>ID: {ticketId.slice(0, 16)}...</span>
                     </div>
-                    {listing?.sellerChain && (
+                    {listing?.seller && !isOwnListing && (
                         <div style={styles.metaItem}>
                             <User size={14} />
-                            <span>Seller: {listing.sellerChain.slice(0, 16)}...</span>
+                            <span>Seller: {listing.seller.slice(0, 10)}...{listing.seller.slice(-4)}</span>
                         </div>
                     )}
                 </div>
 
-                <button
-                    onClick={handleBuy}
-                    disabled={buying}
-                    style={{
-                        ...styles.btn,
-                        ...styles.btnGreen,
-                        ...(buying ? styles.btnDisabled : {}),
-                    }}
-                >
-                    {buying ? (
-                        <>
-                            <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} />
-                            Purchasing...
-                        </>
-                    ) : !isConnected ? (
-                        <>
-                            <Wallet size={16} />
-                            Connect to Buy
-                        </>
-                    ) : (
-                        <>
-                            <ShoppingBag size={16} />
-                            Buy Now
-                        </>
-                    )}
-                </button>
+                {isOwnListing ? (
+                    <button
+                        onClick={handleCancel}
+                        disabled={cancelling}
+                        style={{
+                            ...styles.btn,
+                            backgroundColor: 'rgba(239, 68, 68, 0.2)',
+                            color: '#ef4444',
+                            border: '1px solid rgba(239, 68, 68, 0.3)',
+                            ...(cancelling ? styles.btnDisabled : {}),
+                        }}
+                    >
+                        {cancelling ? (
+                            <>
+                                <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} />
+                                Cancelling...
+                            </>
+                        ) : (
+                            <>
+                                <XCircle size={16} />
+                                Cancel Listing
+                            </>
+                        )}
+                    </button>
+                ) : (
+                    <button
+                        onClick={handleBuy}
+                        disabled={buying}
+                        style={{
+                            ...styles.btn,
+                            ...styles.btnGreen,
+                            ...(buying ? styles.btnDisabled : {}),
+                        }}
+                    >
+                        {buying ? (
+                            <>
+                                <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} />
+                                Purchasing...
+                            </>
+                        ) : !isConnected ? (
+                            <>
+                                <Wallet size={16} />
+                                Connect to Buy
+                            </>
+                        ) : (
+                            <>
+                                <ShoppingBag size={16} />
+                                Buy Now
+                            </>
+                        )}
+                    </button>
+                )}
             </div>
         </div>
     );
