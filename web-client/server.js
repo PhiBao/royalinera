@@ -17,9 +17,16 @@ const NODE_SERVICE_PORT = process.env.LINERA_SERVICE_PORT || 8080;
 const CHAIN_ID = process.env.VITE_MARKETPLACE_CHAIN_ID;
 const APP_ID = process.env.VITE_LINERA_APPLICATION_ID;
 
-// Hub application URL - use env for production, fallback to localhost for dev
-const HUB_APP_URL = process.env.VITE_HUB_APP_URL || 
-  `http://localhost:${NODE_SERVICE_PORT}/chains/${CHAIN_ID}/applications/${APP_ID}`;
+// Hub application URL
+// Priority: VITE_HUB_APP_URL (explicit) > localhost:8080 (requires linera service)
+const getHubUrl = () => {
+  if (process.env.VITE_HUB_APP_URL) {
+    return process.env.VITE_HUB_APP_URL;
+  }
+  // Use localhost:8080 - requires 'linera service --port 8080' to be running
+  return `http://localhost:${NODE_SERVICE_PORT}/chains/${CHAIN_ID}/applications/${APP_ID}`;
+};
+const HUB_APP_URL = getHubUrl();
 
 // Add COOP/COEP headers for SharedArrayBuffer support (needed for crypto operations)
 app.use((req, res, next) => {

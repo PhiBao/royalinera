@@ -1,7 +1,7 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
-import { useWallet } from '../providers/WalletProvider';
+import { useWallet } from '../contexts/WalletContext';
 import WalletButton from './WalletButton';
 import { Ticket, ShoppingBag, PlusCircle, User, Menu, X, Calendar, Store, Tag } from 'lucide-react';
 

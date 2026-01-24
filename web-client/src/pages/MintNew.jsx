@@ -1,20 +1,14 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { gql } from '@apollo/client/core';
-import { useQuery, useMutation } from '@apollo/client/react';
-import { useWallet } from '../providers/WalletProvider';
-import { useGraphQL } from '../providers/GraphQLProvider';
+import { useWallet } from '../contexts/WalletContext';
+import { useLinera } from '../providers/LineraProvider';
 import { Ticket, Sparkles, Calendar, MapPin, Wallet, Loader2, ChevronDown, DollarSign, Users, ArrowLeft } from 'lucide-react';
 
-// GraphQL
-const GET_EVENTS = gql`
-  query GetEvents {
-    events
-  }
-`;
+// GraphQL queries as plain strings for direct blockchain calls
+const GET_EVENTS_QUERY = `query GetEvents { events }`;
 
-const GET_EVENT = gql`
+const GET_EVENT_QUERY = `
   query GetEvent($eventId: String!) {
     event(eventId: $eventId) {
       id { value }
@@ -30,7 +24,7 @@ const GET_EVENT = gql`
   }
 `;
 
-const MINT_TICKET = gql`
+const MINT_TICKET_MUTATION = `
   mutation MintTicket($eventId: String!, $owner: String!, $seat: String!, $blobHash: String!) {
     mintTicket(eventId: $eventId, owner: $owner, seat: $seat, blobHash: $blobHash)
   }
@@ -222,8 +216,8 @@ const styles = {
 const Mint = () => {
     const navigate = useNavigate();
     const [searchParams] = useSearchParams();
-    const { isConnected, openWalletModal, address: userAddress } = useWallet();
-    const { hubClient } = useGraphQL();
+    const { isConnected, openWalletModal, owner: userAddress } = useWallet();
+    const { queryHub, mutate, isReady } = useLinera();
     
     const preselectedEventId = searchParams.get('eventId');
     
@@ -231,90 +225,75 @@ const Mint = () => {
     const [seat, setSeat] = useState('');
     const [minting, setMinting] = useState(false);
 
-    // Retry wrapper for mutations with testnet timestamp issues
-    const withRetry = async (mutationFn, variables, options = {}) => {
-        const { maxRetries = 5, delay = 3000, onSuccess, onError } = options;
-        const toastId = toast.loading('Processing...');
-        
-        for (let attempt = 1; attempt <= maxRetries; attempt++) {
-            try {
-                const result = await mutationFn({ variables });
-                
-                if (result.errors && result.errors.length > 0) {
-                    const errorMsg = result.errors[0].message || 'Unknown error';
-                    const isRetryable = errorMsg.includes('timestamp') || 
-                                       errorMsg.includes('future') || 
-                                       errorMsg.includes('quorum') ||
-                                       errorMsg.includes('malformed');
-                    
-                    if (isRetryable && attempt < maxRetries) {
-                        toast.loading(`Retry ${attempt}/${maxRetries}... waiting ${delay/1000}s`, { id: toastId });
-                        await new Promise(r => setTimeout(r, delay));
-                        continue;
-                    }
-                    throw new Error(errorMsg);
-                }
-                
-                toast.success('Success!', { id: toastId });
-                if (onSuccess) onSuccess(result);
-                return result;
-                
-            } catch (err) {
-                const errorMsg = err.message || 'Unknown error';
-                const isRetryable = errorMsg.includes('timestamp') || 
-                                   errorMsg.includes('future') || 
-                                   errorMsg.includes('quorum') ||
-                                   errorMsg.includes('malformed');
-                
-                if (isRetryable && attempt < maxRetries) {
-                    toast.loading(`Retry ${attempt}/${maxRetries}... waiting ${delay/1000}s`, { id: toastId });
-                    await new Promise(r => setTimeout(r, delay));
-                    continue;
-                }
-                
-                toast.error(`Failed: ${errorMsg}`, { id: toastId });
-                if (onError) onError(err);
-                return null;
-            }
-        }
-    };
+    // Direct blockchain query state for events list
+    const [eventsData, setEventsData] = useState(null);
+    const [eventsLoading, setEventsLoading] = useState(true);
+    
+    // Direct blockchain query state for selected event
+    const [selectedEvent, setSelectedEvent] = useState(null);
+    const [eventLoading, setEventLoading] = useState(false);
 
-    // Fetch all events for the dropdown
-    const { data: eventsData, loading: eventsLoading } = useQuery(GET_EVENTS, {
-        client: hubClient,
-    });
+    // Fetch all events from hub chain
+    const fetchEvents = useCallback(async () => {
+        if (!isReady) {
+            setEventsLoading(false);
+            return;
+        }
+        
+        setEventsLoading(true);
+        try {
+            console.log('[Mint] Fetching events from hub chain...');
+            const result = await queryHub(GET_EVENTS_QUERY);
+            setEventsData(result);
+        } catch (err) {
+            console.error('[Mint] Failed to fetch events:', err);
+        } finally {
+            setEventsLoading(false);
+        }
+    }, [queryHub, isReady]);
+
+    // Fetch selected event details from hub chain
+    const fetchEvent = useCallback(async () => {
+        if (!isReady || !selectedEventId) {
+            setSelectedEvent(null);
+            return;
+        }
+        
+        setEventLoading(true);
+        try {
+            console.log(`[Mint] Fetching event ${selectedEventId} from hub chain...`);
+            const result = await queryHub(GET_EVENT_QUERY, { eventId: selectedEventId });
+            setSelectedEvent(result?.event);
+        } catch (err) {
+            console.error('[Mint] Failed to fetch event:', err);
+        } finally {
+            setEventLoading(false);
+        }
+    }, [queryHub, isReady, selectedEventId]);
+
+    useEffect(() => {
+        fetchEvents();
+    }, [fetchEvents]);
+
+    useEffect(() => {
+        fetchEvent();
+    }, [fetchEvent]);
 
     const eventIds = useMemo(() => {
         if (!eventsData?.events) return [];
-        // Backend returns object {eventId: Event}, convert to array of IDs
         if (typeof eventsData.events === 'object' && !Array.isArray(eventsData.events)) {
             return Object.keys(eventsData.events);
         }
         return Array.isArray(eventsData.events) ? eventsData.events : [];
     }, [eventsData]);
     
-    // Get event names for dropdown display
     const eventsMap = useMemo(() => {
         if (!eventsData?.events || Array.isArray(eventsData.events)) return {};
         return eventsData.events;
     }, [eventsData]);
 
-    // Fetch selected event details
-    const { data: eventData, loading: eventLoading } = useQuery(GET_EVENT, {
-        client: hubClient,
-        variables: { eventId: selectedEventId },
-        skip: !selectedEventId,
-    });
-
-    const selectedEvent = eventData?.event;
     const availableTickets = selectedEvent ? selectedEvent.maxTickets - selectedEvent.mintedTickets : 0;
     const soldOut = selectedEvent && availableTickets <= 0;
-
-    // Mint mutation
-    const [mintTicketMutation] = useMutation(MINT_TICKET, {
-        client: hubClient,
-        fetchPolicy: 'no-cache',
-    });
 
     useEffect(() => {
         if (preselectedEventId) {
@@ -333,16 +312,34 @@ const Mint = () => {
             return;
         }
         setMinting(true);
+        
         // Generate a placeholder blob hash (32 bytes of zeros as hex)
         const blobHash = '0x' + '0'.repeat(64);
-        await withRetry(mintTicketMutation, {
-            eventId: selectedEventId,
-            owner: userAddress,
-            seat: seat || 'General Admission',
-            blobHash,
-        }, {
-            onSuccess: () => navigate('/my-tickets'),
-        });
+        
+        try {
+            console.log('[Mint] Minting ticket via direct blockchain mutation...');
+            
+            // Use showToast: false to avoid double toast - we'll show our own
+            const toastId = toast.loading('Signing and minting ticket...');
+            
+            await mutate(MINT_TICKET_MUTATION, {
+                eventId: selectedEventId,
+                owner: userAddress,
+                seat: seat || 'General Admission',
+                blobHash,
+            }, { showToast: false });
+            
+            // Longer delay to let the transaction propagate to hub chain
+            toast.success('Ticket minted successfully! Redirecting...', { id: toastId });
+            await new Promise(r => setTimeout(r, 3000));
+            
+            // Navigate with state to trigger refresh
+            navigate('/my-tickets', { state: { refresh: true, newTicketAt: Date.now() } });
+        } catch (err) {
+            console.error('[Mint] Mint failed:', err);
+            toast.error(err.message || 'Failed to mint ticket');
+        }
+        
         setMinting(false);
     };
 
@@ -486,22 +483,6 @@ const Mint = () => {
 
             <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
         </div>
-    );
-};
-
-// Event Option Component (for select dropdown)
-const EventOption = ({ eventId, hubClient }) => {
-    const { data } = useQuery(GET_EVENT, {
-        client: hubClient,
-        variables: { eventId },
-    });
-
-    const event = data?.event;
-    
-    return (
-        <option value={eventId}>
-            {event?.name || `Event ${eventId.slice(0, 8)}...`}
-        </option>
     );
 };
 

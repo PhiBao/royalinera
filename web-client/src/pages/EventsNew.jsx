@@ -1,20 +1,14 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { gql } from '@apollo/client/core';
-import { useQuery, useMutation } from '@apollo/client/react';
-import { useWallet } from '../providers/WalletProvider';
-import { useGraphQL } from '../providers/GraphQLProvider';
-import { Calendar, MapPin, Users, Ticket, Plus, X, Loader2, RefreshCw, Wallet, Clock } from 'lucide-react';
+import { useWallet } from '../contexts/WalletContext';
+import { useLinera } from '../providers/LineraProvider';
+import { Calendar, MapPin, Users, Ticket, Plus, X, Loader2, RefreshCw, Wallet, Clock, Search, Filter, ChevronDown, ArrowUpDown } from 'lucide-react';
 
-// GraphQL
-const GET_EVENTS = gql`
-  query GetEvents {
-    events
-  }
-`;
+// GraphQL queries as plain strings for direct blockchain calls
+const GET_EVENTS_QUERY = `query GetEvents { events }`;
 
-const GET_EVENT = gql`
+const GET_EVENT_QUERY = `
   query GetEvent($eventId: String!) {
     event(eventId: $eventId) {
       id { value }
@@ -30,7 +24,7 @@ const GET_EVENT = gql`
   }
 `;
 
-const CREATE_EVENT = gql`
+const CREATE_EVENT_MUTATION = `
   mutation CreateEvent(
     $eventId: String!, 
     $name: String!, 
@@ -264,7 +258,7 @@ const styles = {
 const Events = () => {
     const navigate = useNavigate();
     const { isConnected, openWalletModal } = useWallet();
-    const { hubClient } = useGraphQL();
+    const { query, mutate, isReady } = useLinera();
     
     const [showCreateModal, setShowCreateModal] = useState(false);
     const [creating, setCreating] = useState(false);
@@ -277,65 +271,45 @@ const Events = () => {
         royaltyBps: '500',
     });
 
-    const { data, loading, refetch } = useQuery(GET_EVENTS, {
-        client: hubClient,
-    });
+    // Direct blockchain query state
+    const [data, setData] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
 
-    const [createEventMutation] = useMutation(CREATE_EVENT, {
-        client: hubClient,
-        fetchPolicy: 'no-cache',
-    });
+    // Wave 6: Search and Filter state
+    const [searchQuery, setSearchQuery] = useState('');
+    const [sortBy, setSortBy] = useState('date'); // 'date', 'name', 'availability'
+    const [sortOrder, setSortOrder] = useState('asc'); // 'asc', 'desc'
+    const [filterAvailability, setFilterAvailability] = useState('all'); // 'all', 'available', 'soldout'
+    const [showFilters, setShowFilters] = useState(false);
 
-    // Retry wrapper for mutations with testnet timestamp issues
-    const withRetry = async (mutationFn, variables, options = {}) => {
-        const { maxRetries = 5, delay = 3000, onSuccess, onError } = options;
-        const toastId = toast.loading('Processing...');
-        
-        for (let attempt = 1; attempt <= maxRetries; attempt++) {
-            try {
-                const result = await mutationFn({ variables });
-                
-                // Check if there's an error in the response
-                if (result.errors && result.errors.length > 0) {
-                    const errorMsg = result.errors[0].message || 'Unknown error';
-                    const isRetryable = errorMsg.includes('timestamp') || 
-                                       errorMsg.includes('future') || 
-                                       errorMsg.includes('quorum') ||
-                                       errorMsg.includes('malformed');
-                    
-                    if (isRetryable && attempt < maxRetries) {
-                        toast.loading(`Retry ${attempt}/${maxRetries}... waiting ${delay/1000}s`, { id: toastId });
-                        await new Promise(r => setTimeout(r, delay));
-                        continue;
-                    }
-                    throw new Error(errorMsg);
-                }
-                
-                // Success!
-                toast.success('Success!', { id: toastId });
-                if (onSuccess) onSuccess(result);
-                return result;
-                
-            } catch (err) {
-                const errorMsg = err.message || 'Unknown error';
-                const isRetryable = errorMsg.includes('timestamp') || 
-                                   errorMsg.includes('future') || 
-                                   errorMsg.includes('quorum') ||
-                                   errorMsg.includes('malformed');
-                
-                if (isRetryable && attempt < maxRetries) {
-                    toast.loading(`Retry ${attempt}/${maxRetries}... waiting ${delay/1000}s`, { id: toastId });
-                    await new Promise(r => setTimeout(r, delay));
-                    continue;
-                }
-                
-                // Final failure
-                toast.error(`Failed: ${errorMsg}`, { id: toastId });
-                if (onError) onError(err);
-                return null;
-            }
+    // Fetch events directly from blockchain
+    const refetch = useCallback(async () => {
+        if (!isReady) {
+            setLoading(false);
+            return;
         }
-    };
+        
+        setLoading(true);
+        setError(null);
+        
+        try {
+            console.log('[Events] Fetching events directly from blockchain...');
+            const result = await query(GET_EVENTS_QUERY);
+            console.log('[Events] Blockchain response:', result);
+            setData(result);
+        } catch (err) {
+            console.error('[Events] Blockchain query failed:', err);
+            setError(err);
+        } finally {
+            setLoading(false);
+        }
+    }, [query, isReady]);
+
+    // Load events on mount and when ready
+    useEffect(() => {
+        refetch();
+    }, [refetch]);
 
     const eventIds = useMemo(() => {
         if (!data?.events) return [];
@@ -352,6 +326,63 @@ const Events = () => {
         return data.events;
     }, [data]);
 
+    // Wave 6: Filter and sort events
+    const filteredEventIds = useMemo(() => {
+        let filtered = [...eventIds];
+        
+        // Search filter - search by name, description, or venue
+        if (searchQuery.trim()) {
+            const query = searchQuery.toLowerCase();
+            filtered = filtered.filter(id => {
+                const event = eventsMap[id];
+                if (!event) return true; // Keep if we don't have event data yet
+                const name = (event.name || '').toLowerCase();
+                const description = (event.description || '').toLowerCase();
+                const venue = (event.venue || '').toLowerCase();
+                return name.includes(query) || description.includes(query) || venue.includes(query);
+            });
+        }
+        
+        // Availability filter
+        if (filterAvailability !== 'all') {
+            filtered = filtered.filter(id => {
+                const event = eventsMap[id];
+                if (!event) return true;
+                const available = (event.maxTickets || 0) - (event.mintedTickets || 0);
+                if (filterAvailability === 'available') return available > 0;
+                if (filterAvailability === 'soldout') return available <= 0;
+                return true;
+            });
+        }
+        
+        // Sort events
+        filtered.sort((a, b) => {
+            const eventA = eventsMap[a];
+            const eventB = eventsMap[b];
+            if (!eventA || !eventB) return 0;
+            
+            let comparison = 0;
+            switch (sortBy) {
+                case 'name':
+                    comparison = (eventA.name || '').localeCompare(eventB.name || '');
+                    break;
+                case 'date':
+                    comparison = (eventA.startTime || 0) - (eventB.startTime || 0);
+                    break;
+                case 'availability':
+                    const availA = (eventA.maxTickets || 0) - (eventA.mintedTickets || 0);
+                    const availB = (eventB.maxTickets || 0) - (eventB.mintedTickets || 0);
+                    comparison = availB - availA; // More available first
+                    break;
+                default:
+                    comparison = 0;
+            }
+            return sortOrder === 'asc' ? comparison : -comparison;
+        });
+        
+        return filtered;
+    }, [eventIds, eventsMap, searchQuery, sortBy, sortOrder, filterAvailability]);
+
     const handleCreate = async (e) => {
         e.preventDefault();
         if (!isConnected) {
@@ -359,26 +390,36 @@ const Events = () => {
             return;
         }
         setCreating(true);
+        
         // Generate unique event ID
         const eventId = `event_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         // Convert date to Unix timestamp
         const startTime = Math.floor(new Date(formData.date).getTime() / 1000);
         
-        await withRetry(createEventMutation, {
-            eventId,
-            name: formData.name,
-            description: formData.description || formData.name,
-            venue: formData.venue,
-            startTime,
-            royaltyBps: parseInt(formData.royaltyBps) || 500,
-            maxTickets: parseInt(formData.totalTickets),
-        }, {
-            onSuccess: () => {
-                setShowCreateModal(false);
-                setFormData({ name: '', description: '', date: '', venue: '', totalTickets: '', royaltyBps: '500' });
-                refetch();
-            },
-        });
+        try {
+            console.log('[Events] Creating event via direct blockchain mutation...');
+            
+            // Use direct blockchain mutation with built-in retry
+            await mutate(CREATE_EVENT_MUTATION, {
+                eventId,
+                name: formData.name,
+                description: formData.description || formData.name,
+                venue: formData.venue,
+                startTime,
+                royaltyBps: parseInt(formData.royaltyBps) || 500,
+                maxTickets: parseInt(formData.totalTickets),
+            });
+            
+            // Success - close modal and refresh
+            setShowCreateModal(false);
+            setFormData({ name: '', description: '', date: '', venue: '', totalTickets: '', royaltyBps: '500' });
+            refetch();
+            
+        } catch (err) {
+            console.error('[Events] Create event failed:', err);
+            // Toast already shown by mutate
+        }
+        
         setCreating(false);
     };
 
@@ -420,26 +461,143 @@ const Events = () => {
                         </button>
                     </div>
                 </div>
+                
+                {/* Wave 6: Search and Filter Bar */}
+                <div style={{ 
+                    marginTop: '24px', 
+                    display: 'flex', 
+                    alignItems: 'center',
+                    gap: '12px', 
+                    flexWrap: 'wrap',
+                    padding: '12px 16px',
+                    backgroundColor: 'rgba(255,255,255,0.02)',
+                    borderRadius: '12px',
+                    border: '1px solid rgba(255,255,255,0.05)',
+                }}>
+                    {/* Search Input */}
+                    <div style={{ flex: 1, minWidth: '200px', position: 'relative' }}>
+                        <Search size={16} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: '#6b7280' }} />
+                        <input
+                            type="text"
+                            placeholder="Search events..."
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            style={{
+                                width: '100%',
+                                padding: '10px 14px 10px 36px',
+                                backgroundColor: 'rgba(255,255,255,0.05)',
+                                border: '1px solid rgba(255,255,255,0.1)',
+                                borderRadius: '8px',
+                                color: '#ffffff',
+                                fontSize: '0.875rem',
+                                outline: 'none',
+                                boxSizing: 'border-box',
+                            }}
+                        />
+                    </div>
+                    
+                    {/* Divider */}
+                    <div style={{ width: '1px', height: '24px', backgroundColor: 'rgba(255,255,255,0.1)' }} />
+                    
+                    {/* Sort Controls */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ fontSize: '0.75rem', color: '#6b7280', whiteSpace: 'nowrap' }}>Sort:</span>
+                        <select
+                            value={sortBy}
+                            onChange={(e) => setSortBy(e.target.value)}
+                            style={{
+                                padding: '8px 12px',
+                                backgroundColor: 'rgba(255,255,255,0.05)',
+                                border: '1px solid rgba(255,255,255,0.1)',
+                                borderRadius: '8px',
+                                color: '#ffffff',
+                                fontSize: '0.8rem',
+                                cursor: 'pointer',
+                                outline: 'none',
+                            }}
+                        >
+                            <option value="date" style={{ background: '#1e1e1e' }}>Date</option>
+                            <option value="name" style={{ background: '#1e1e1e' }}>Name</option>
+                            <option value="availability" style={{ background: '#1e1e1e' }}>Availability</option>
+                        </select>
+                        <button 
+                            onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
+                            style={{ 
+                                padding: '8px 10px',
+                                backgroundColor: 'rgba(255,255,255,0.05)',
+                                border: '1px solid rgba(255,255,255,0.1)',
+                                borderRadius: '8px',
+                                color: '#a0a0a0',
+                                fontSize: '0.8rem',
+                                cursor: 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                minWidth: '4rem',
+                                justifyContent: 'center',
+                            }}
+                        >
+                            {sortOrder === 'asc' ? '↑ Asc' : '↓ Desc'}
+                        </button>
+                    </div>
+                    
+                    {/* Divider */}
+                    <div style={{ width: '1px', height: '24px', backgroundColor: 'rgba(255,255,255,0.1)' }} />
+                    
+                    {/* Availability Filter */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ fontSize: '0.75rem', color: '#6b7280', whiteSpace: 'nowrap' }}>Filter:</span>
+                        <select
+                            value={filterAvailability}
+                            onChange={(e) => setFilterAvailability(e.target.value)}
+                            style={{
+                                padding: '8px 12px',
+                                backgroundColor: 'rgba(255,255,255,0.05)',
+                                border: '1px solid rgba(255,255,255,0.1)',
+                                borderRadius: '8px',
+                                color: '#ffffff',
+                                fontSize: '0.8rem',
+                                cursor: 'pointer',
+                                outline: 'none',
+                            }}
+                        >
+                            <option value="all" style={{ background: '#1e1e1e' }}>All Events</option>
+                            <option value="available" style={{ background: '#1e1e1e' }}>Available</option>
+                            <option value="soldout" style={{ background: '#1e1e1e' }}>Sold Out</option>
+                        </select>
+                    </div>
+                </div>
+                
+                {/* Results count */}
+                {searchQuery && (
+                    <div style={{ marginTop: '12px', fontSize: '0.875rem', color: '#a0a0a0' }}>
+                        Found {filteredEventIds.length} event{filteredEventIds.length !== 1 ? 's' : ''} matching "{searchQuery}"
+                    </div>
+                )}
             </div>
 
             {/* Events Grid */}
-            {eventIds.length === 0 ? (
+            {filteredEventIds.length === 0 ? (
                 <div style={styles.emptyState}>
                     <Calendar size={48} style={{ color: '#4b5563', margin: '0 auto 16px' }} />
-                    <h3 style={{ fontSize: '1.25rem', fontWeight: '600', marginBottom: '8px', color: '#ffffff' }}>No events yet</h3>
-                    <p style={{ color: '#a0a0a0', marginBottom: '24px' }}>Be the first to create an event!</p>
-                    <button onClick={handleCreateClick} style={{ ...styles.btn, ...styles.btnPrimary }}>
-                        <Plus size={16} />
-                        Create Event
-                    </button>
+                    <h3 style={{ fontSize: '1.25rem', fontWeight: '600', marginBottom: '8px', color: '#ffffff' }}>
+                        {searchQuery ? 'No matching events' : 'No events yet'}
+                    </h3>
+                    <p style={{ color: '#a0a0a0', marginBottom: '24px' }}>
+                        {searchQuery ? 'Try adjusting your search or filters' : 'Be the first to create an event!'}
+                    </p>
+                    {!searchQuery && (
+                        <button onClick={handleCreateClick} style={{ ...styles.btn, ...styles.btnPrimary }}>
+                            <Plus size={16} />
+                            Create Event
+                        </button>
+                    )}
                 </div>
             ) : (
                 <div style={styles.grid}>
-                    {eventIds.map((eventId) => (
+                    {filteredEventIds.map((eventId) => (
                         <EventCard
                             key={eventId}
                             eventId={eventId}
-                            hubClient={hubClient}
                             onMint={() => navigate(`/mint?eventId=${eventId}`)}
                         />
                     ))}
@@ -549,14 +707,30 @@ const Events = () => {
     );
 };
 
-// Event Card Component
-const EventCard = ({ eventId, hubClient, onMint }) => {
-    const { data, loading } = useQuery(GET_EVENT, {
-        client: hubClient,
-        variables: { eventId },
-    });
+// Event Card Component - uses direct blockchain queries
+const EventCard = ({ eventId, onMint }) => {
+    const { query, isReady } = useLinera();
+    const [event, setEvent] = useState(null);
+    const [loading, setLoading] = useState(true);
 
-    const event = data?.event;
+    useEffect(() => {
+        const fetchEvent = async () => {
+            if (!isReady) return;
+            
+            try {
+                console.log(`[EventCard] Fetching event ${eventId} from blockchain...`);
+                const result = await query(GET_EVENT_QUERY, { eventId });
+                setEvent(result?.event);
+            } catch (err) {
+                console.error(`[EventCard] Failed to fetch event ${eventId}:`, err);
+            } finally {
+                setLoading(false);
+            }
+        };
+        
+        fetchEvent();
+    }, [eventId, query, isReady]);
+
     const availableTickets = event ? event.maxTickets - event.mintedTickets : 0;
     const soldOut = event && availableTickets <= 0;
 

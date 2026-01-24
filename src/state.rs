@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use linera_sdk::{
     views::{linera_views, MapView, RegisterView, RootView, ViewStorageContext},
 };
-use ticketing::{BalanceEntry, Event, EventId, Ticket, TicketId};
+use ticketing::{BalanceEntry, Event, EventId, Ticket, TicketId, TicketHistory};
 
 /// All on-chain data required by the ticketing contract and service.
 /// Uses String (chain_id) as identity keys instead of AccountOwner.
@@ -31,4 +31,7 @@ pub struct TicketingState {
     /// Royalty balances keyed by chain_id string
     pub royalty_balances: MapView<String, BalanceEntry>,
     pub total_royalties: RegisterView<u128>,
+    // === Wave 6: Ticket History (Provenance) ===
+    /// Ownership and price history for each ticket
+    pub ticket_history: MapView<TicketId, TicketHistory>,
 }

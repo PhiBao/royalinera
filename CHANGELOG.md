@@ -139,41 +139,54 @@ All notable changes to the Ticketh ticketing dApp will be documented in this fil
 
 ---
 
-## [Planned - Wave 6] - Focus: Discovery & User Experience
+## [Wave 6] - 2026-01-24 - Discovery & User Experience
 
-### Event Discovery & Search
+### Added
+
+#### Event Discovery & Search
 - **Search & Filtering**
-  - Search events by name/description
-  - Filter by date, availability, price range
-  - Sort by date, popularity, name
+  - ✅ Search events by name/description
+  - ✅ Filter by date (upcoming/past), availability, price range
+  - ✅ Sort by date, name
+  - ✅ Compact single-row filter bar with dividers
 - **Enhanced Marketplace**
-  - Search listings by event name
-  - Sort by price (low/high)
-  - Filter to hide own listings
+  - ✅ Search listings by event name
+  - ✅ Sort by price (low/high)
+  - ✅ Filter own listings vs others
 
-### Ticket Management
+#### Ticket Management
 - **Ticket History & Provenance**
-  - Full ownership history timeline
-  - Transfer records with timestamps
-  - Price history for each ticket
-- **Enhanced Metadata**
-  - Ticket image upload and display
-  - Rich text descriptions
-  - Venue information
+  - ✅ Full ownership history timeline
+  - ✅ Transfer records with timestamps and acquisition type
+  - ✅ Price history for each ticket (list/sold events)
+  - ✅ New GraphQL query: `ticketHistory(ticketId)`
+- **My Tickets Improvements**
+  - ✅ Filter by Listed/Not Listed status
+  - ✅ Quick actions for list/transfer/cancel
 
-### Wallet Improvements
-- **Import/Export Wallets**
-  - Mnemonic backup and restore
-  - IndexedDB persistence for wallets
-  - Account switching improvements
-- **Balance Display**
-  - Show wallet balance in header
-  - Transaction history
+#### Wallet Improvements
+- **MetaMask Integration**
+  - ✅ Lightweight wallet connection (skips slow validator subscription)
+  - ✅ Fast connect via faucet chain claim
+  - ✅ Session-persistent chain ID storage
+- **Transaction History**
+  - ✅ Shows mints, purchases, transfers
+  - ✅ Expandable panel in wallet modal
 
 ### Technical
-- Vercel deployment with SPA routing
-- Environment-based API configuration
-- Improved error handling and user feedback
+- **Hybrid Architecture**: Lightweight wallet connect + 8080 backend for queries/mutations
+- **New Rust Types**: `TicketHistory`, `OwnershipRecord`, `PriceHistoryEntry`, `AcquisitionType`, `PriceEventType`
+- **State Addition**: `ticket_history: MapView<TicketId, TicketHistory>` for provenance tracking
+- **Vite HMR Fix**: Resolved COEP blocking issue for development
+
+### Known Limitations
+- Ticket image upload not yet implemented (planned for Wave 8)
+- Chain balance display unavailable in lightweight mode (shows when full Client connected)
+
+### Deployment
+- **Chain ID**: `72f9d0af181a93b93aed812c8dbd12cba13d73cac273d05fc20391a9e7f9dbf3`
+- **Application ID**: `8fa9a02f7552969ad7c217418082becf0c04b4041de185e683e90894822918a1`
+- **Network**: Conway Testnet
 
 ---
 
@@ -215,14 +228,54 @@ All notable changes to the Ticketh ticketing dApp will be documented in this fil
 
 ---
 
+## [Planned - Wave 8] - Focus: Media & Polish
+
+### Ticket Media
+- **Image Upload & Display**
+  - Upload ticket artwork/images
+  - IPFS or blob storage integration
+  - Image preview in ticket cards
+  - Gallery view for collections
+
+### Enhanced UX
+- **Rich Metadata**
+  - Markdown descriptions for events
+  - Venue information with maps
+  - Event categories and tags
+- **Notification System**
+  - Email notifications for purchases
+  - In-app notification center
+  - Price drop alerts
+
+### Mobile Optimization
+- **Responsive Design**
+  - Mobile-first layouts
+  - Touch-friendly interactions
+  - PWA support
+- **Wallet Connect**
+  - WalletConnect protocol support
+  - Mobile wallet integration
+
+### Performance
+- **Caching Layer**
+  - Redis/IndexedDB caching
+  - Optimistic updates
+  - Offline support
+- **Load Testing**
+  - Stress test marketplace
+  - Optimize GraphQL queries
+
+---
+
 ## Development Notes
 
 ### Deployment Info
 - **Network**: Conway Testnet
-- **Chain ID**: `4852f46710e52e0ba53179b6a7bfec530d79885b5c27d9a4984d55e88cae721e`
-- **Application ID**: `1760a569d07b95ea48a8b05ee2b69f8a1eac078530521cb20cd76fab3cfc9569`
-- **Owner**: `0x37526fce9ad3173a124656712b9ad105331696d9d2eaf74a28030930a1c87555`
-- **Service URL**: `http://localhost:8085`
+- **Chain ID**: `72f9d0af181a93b93aed812c8dbd12cba13d73cac273d05fc20391a9e7f9dbf3`
+- **Application ID**: `8fa9a02f7552969ad7c217418082becf0c04b4041de185e683e90894822918a1`
+- **Owner**: `0x7e3591fc5c6d3ad2c0bd0eecb0453bc074162f5f196d37f0658bfbeb12f9b6a0`
+- **Service URL**: `http://localhost:8080`
+- **Deployed**: 2026-01-24
 
 ### Key Learnings
 - Conway testnet has strict timestamp validation (500ms grace period)

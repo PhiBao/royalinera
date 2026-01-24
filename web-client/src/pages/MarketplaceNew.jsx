@@ -1,19 +1,13 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import toast from 'react-hot-toast';
-import { gql } from '@apollo/client/core';
-import { useQuery, useMutation } from '@apollo/client/react';
-import { useWallet } from '../providers/WalletProvider';
-import { useGraphQL } from '../providers/GraphQLProvider';
-import { ShoppingBag, Ticket, DollarSign, Wallet, Loader2, RefreshCw, User, Hash, XCircle } from 'lucide-react';
+import { useWallet } from '../contexts/WalletContext';
+import { useLinera } from '../providers/LineraProvider';
+import { ShoppingBag, Ticket, DollarSign, Wallet, Loader2, RefreshCw, User, Hash, XCircle, Search, ArrowUpDown, Filter } from 'lucide-react';
 
-// GraphQL
-const GET_LISTINGS = gql`
-  query GetListings {
-    listings
-  }
-`;
+// GraphQL queries as plain strings for direct blockchain calls
+const GET_LISTINGS_QUERY = `query GetListings { listings }`;
 
-const GET_TICKET = gql`
+const GET_TICKET_QUERY = `
   query GetTicket($ticketId: String!) {
     ticket(ticketId: $ticketId) {
       ticketId
@@ -29,13 +23,13 @@ const GET_TICKET = gql`
   }
 `;
 
-const BUY_TICKET = gql`
+const BUY_TICKET_MUTATION = `
   mutation BuyListing($ticketId: String!, $buyer: String!, $price: String!) {
     buyListing(ticketId: $ticketId, buyer: $buyer, price: $price)
   }
 `;
 
-const CANCEL_LISTING = gql`
+const CANCEL_LISTING_MUTATION = `
   mutation CancelListing($ticketId: String!, $seller: String!) {
     cancelListing(ticketId: $ticketId, seller: $seller)
   }
@@ -171,27 +165,103 @@ const styles = {
 };
 
 const Marketplace = () => {
-    const { isConnected, openWalletModal, chainId: userChainId, address: userAddress } = useWallet();
-    const { hubClient } = useGraphQL();
+    const { isConnected, openWalletModal, chainId: userChainId, owner: userAddress } = useWallet();
+    const { query, mutate, isReady } = useLinera();
 
-    const { data, loading, refetch } = useQuery(GET_LISTINGS, {
-        client: hubClient,
-    });
+    // Direct blockchain query state
+    const [data, setData] = useState(null);
+    const [loading, setLoading] = useState(true);
+
+    // Wave 6: Search and Filter state
+    const [searchQuery, setSearchQuery] = useState('');
+    const [sortBy, setSortBy] = useState('price'); // 'price', 'eventName'
+    const [sortOrder, setSortOrder] = useState('asc'); // 'asc', 'desc'
+    const [hideOwnListings, setHideOwnListings] = useState(false);
+
+    // Fetch listings directly from blockchain
+    const refetch = useCallback(async () => {
+        if (!isReady) {
+            setLoading(false);
+            return;
+        }
+        
+        setLoading(true);
+        try {
+            console.log('[Marketplace] Fetching listings from blockchain...');
+            const result = await query(GET_LISTINGS_QUERY);
+            console.log('[Marketplace] Blockchain response:', result);
+            setData(result);
+        } catch (err) {
+            console.error('[Marketplace] Blockchain query failed:', err);
+        } finally {
+            setLoading(false);
+        }
+    }, [query, isReady]);
+
+    useEffect(() => {
+        refetch();
+    }, [refetch]);
 
     const listingIds = useMemo(() => {
         if (!data?.listings) return [];
-        // Backend returns object {ticketId: ListingInfo}, convert to array of IDs
         if (typeof data.listings === 'object' && !Array.isArray(data.listings)) {
             return Object.keys(data.listings);
         }
         return Array.isArray(data.listings) ? data.listings : [];
     }, [data]);
     
-    // Get full listing data from the object
     const listingsMap = useMemo(() => {
         if (!data?.listings || Array.isArray(data.listings)) return {};
         return data.listings;
     }, [data]);
+
+    // Wave 6: Filter and sort listings
+    const filteredListingIds = useMemo(() => {
+        let filtered = [...listingIds];
+        
+        // Hide own listings filter
+        if (hideOwnListings && userAddress) {
+            filtered = filtered.filter(id => {
+                const listing = listingsMap[id];
+                if (!listing?.seller) return true;
+                return listing.seller.toLowerCase() !== userAddress.toLowerCase();
+            });
+        }
+        
+        // Search filter - by event name (from listing.eventName)
+        if (searchQuery.trim()) {
+            const query = searchQuery.toLowerCase();
+            filtered = filtered.filter(id => {
+                const listing = listingsMap[id];
+                const eventName = (listing?.eventName || '').toLowerCase();
+                return eventName.includes(query);
+            });
+        }
+        
+        // Sort listings
+        filtered.sort((a, b) => {
+            const listingA = listingsMap[a];
+            const listingB = listingsMap[b];
+            if (!listingA || !listingB) return 0;
+            
+            let comparison = 0;
+            switch (sortBy) {
+                case 'price':
+                    const priceA = parseFloat(listingA.price) || 0;
+                    const priceB = parseFloat(listingB.price) || 0;
+                    comparison = priceA - priceB;
+                    break;
+                case 'eventName':
+                    comparison = (listingA.eventName || '').localeCompare(listingB.eventName || '');
+                    break;
+                default:
+                    comparison = 0;
+            }
+            return sortOrder === 'asc' ? comparison : -comparison;
+        });
+        
+        return filtered;
+    }, [listingIds, listingsMap, searchQuery, sortBy, sortOrder, hideOwnListings, userAddress]);
 
     if (loading) {
         return (
@@ -215,23 +285,153 @@ const Marketplace = () => {
                         Refresh
                     </button>
                 </div>
+                
+                {/* Wave 6: Search and Filter Bar */}
+                <div style={{ 
+                    marginTop: '24px', 
+                    display: 'flex', 
+                    alignItems: 'center',
+                    gap: '12px', 
+                    flexWrap: 'wrap',
+                    padding: '12px 16px',
+                    backgroundColor: 'rgba(255,255,255,0.02)',
+                    borderRadius: '12px',
+                    border: '1px solid rgba(255,255,255,0.05)',
+                }}>
+                    {/* Search Input */}
+                    <div style={{ flex: 1, minWidth: '200px', position: 'relative' }}>
+                        <Search size={16} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: '#6b7280' }} />
+                        <input
+                            type="text"
+                            placeholder="Search listings..."
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            style={{
+                                width: '100%',
+                                padding: '10px 14px 10px 36px',
+                                backgroundColor: 'rgba(255,255,255,0.05)',
+                                border: '1px solid rgba(255,255,255,0.1)',
+                                borderRadius: '8px',
+                                color: '#ffffff',
+                                fontSize: '0.875rem',
+                                outline: 'none',
+                                boxSizing: 'border-box',
+                            }}
+                        />
+                    </div>
+                    
+                    {/* Divider */}
+                    <div style={{ width: '1px', height: '24px', backgroundColor: 'rgba(255,255,255,0.1)' }} />
+                    
+                    {/* Sort Controls */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <span style={{ fontSize: '0.75rem', color: '#6b7280', whiteSpace: 'nowrap' }}>Sort:</span>
+                        <button 
+                            onClick={() => {
+                                if (sortBy === 'price') {
+                                    setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+                                } else {
+                                    setSortBy('price');
+                                    setSortOrder('asc');
+                                }
+                            }}
+                            style={{ 
+                                padding: '8px 12px',
+                                backgroundColor: sortBy === 'price' ? 'rgba(99, 102, 241, 0.2)' : 'rgba(255,255,255,0.05)',
+                                border: sortBy === 'price' ? '1px solid #6366f1' : '1px solid rgba(255,255,255,0.1)',
+                                borderRadius: '8px',
+                                color: sortBy === 'price' ? '#6366f1' : '#a0a0a0',
+                                fontSize: '0.8rem',
+                                cursor: 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                            }}
+                        >
+                            <DollarSign size={14} />
+                            Price {sortBy === 'price' && (sortOrder === 'asc' ? '↑' : '↓')}
+                        </button>
+                        <button 
+                            onClick={() => {
+                                if (sortBy === 'eventName') {
+                                    setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+                                } else {
+                                    setSortBy('eventName');
+                                    setSortOrder('asc');
+                                }
+                            }}
+                            style={{ 
+                                padding: '8px 12px',
+                                backgroundColor: sortBy === 'eventName' ? 'rgba(99, 102, 241, 0.2)' : 'rgba(255,255,255,0.05)',
+                                border: sortBy === 'eventName' ? '1px solid #6366f1' : '1px solid rgba(255,255,255,0.1)',
+                                borderRadius: '8px',
+                                color: sortBy === 'eventName' ? '#6366f1' : '#a0a0a0',
+                                fontSize: '0.8rem',
+                                cursor: 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                            }}
+                        >
+                            <ArrowUpDown size={14} />
+                            Name {sortBy === 'eventName' && (sortOrder === 'asc' ? '↑' : '↓')}
+                        </button>
+                    </div>
+                    
+                    {/* Hide Own Listings Toggle */}
+                    {isConnected && (
+                        <>
+                            <div style={{ width: '1px', height: '24px', backgroundColor: 'rgba(255,255,255,0.1)' }} />
+                            <button 
+                                onClick={() => setHideOwnListings(!hideOwnListings)}
+                                style={{ 
+                                    padding: '8px 12px',
+                                    backgroundColor: hideOwnListings ? 'rgba(16, 185, 129, 0.2)' : 'rgba(255,255,255,0.05)',
+                                    border: hideOwnListings ? '1px solid #10b981' : '1px solid rgba(255,255,255,0.1)',
+                                    borderRadius: '8px',
+                                    color: hideOwnListings ? '#10b981' : '#a0a0a0',
+                                    fontSize: '0.8rem',
+                                    cursor: 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '6px',
+                                }}
+                            >
+                                <Filter size={14} />
+                                {hideOwnListings ? 'Others Only' : 'Hide Mine'}
+                            </button>
+                        </>
+                    )}
+                </div>
+                
+                {/* Results count */}
+                {(searchQuery || hideOwnListings) && (
+                    <div style={{ marginTop: '12px', fontSize: '0.875rem', color: '#a0a0a0' }}>
+                        Showing {filteredListingIds.length} listing{filteredListingIds.length !== 1 ? 's' : ''}
+                        {searchQuery && ` matching "${searchQuery}"`}
+                        {hideOwnListings && ' (excluding your listings)'}
+                    </div>
+                )}
             </div>
 
             {/* Listings Grid */}
-            {listingIds.length === 0 ? (
+            {filteredListingIds.length === 0 ? (
                 <div style={styles.emptyState}>
                     <ShoppingBag size={48} style={{ color: '#4b5563', margin: '0 auto 16px' }} />
-                    <h3 style={{ fontSize: '1.25rem', fontWeight: '600', marginBottom: '8px', color: '#ffffff' }}>No listings yet</h3>
-                    <p style={{ color: '#a0a0a0', marginBottom: '24px' }}>Be the first to list a ticket for sale!</p>
+                    <h3 style={{ fontSize: '1.25rem', fontWeight: '600', marginBottom: '8px', color: '#ffffff' }}>
+                        {searchQuery || hideOwnListings ? 'No matching listings' : 'No listings yet'}
+                    </h3>
+                    <p style={{ color: '#a0a0a0', marginBottom: '24px' }}>
+                        {searchQuery ? 'Try adjusting your search' : hideOwnListings ? 'No listings from other users' : 'Be the first to list a ticket for sale!'}
+                    </p>
                 </div>
             ) : (
                 <div style={styles.grid}>
-                    {listingIds.map((ticketId) => (
+                    {filteredListingIds.map((ticketId) => (
                         <ListingCard
                             key={ticketId}
                             ticketId={ticketId}
                             listing={listingsMap[ticketId]}
-                            hubClient={hubClient}
                             isConnected={isConnected}
                             openWalletModal={openWalletModal}
                             onBought={refetch}
@@ -247,77 +447,32 @@ const Marketplace = () => {
     );
 };
 
-// Listing Card Component
-const ListingCard = ({ ticketId, listing, hubClient, isConnected, openWalletModal, onBought, userChainId, userAddress }) => {
+// Listing Card Component - uses direct blockchain queries
+const ListingCard = ({ ticketId, listing, isConnected, openWalletModal, onBought, userChainId, userAddress }) => {
+    const { query, mutate, isReady } = useLinera();
     const [buying, setBuying] = useState(false);
     const [cancelling, setCancelling] = useState(false);
+    const [ticket, setTicket] = useState(null);
+    const [ticketLoading, setTicketLoading] = useState(true);
 
-    const { data: ticketData, loading: ticketLoading } = useQuery(GET_TICKET, {
-        client: hubClient,
-        variables: { ticketId },
-    });
-
-    const [buyTicketMutation] = useMutation(BUY_TICKET, {
-        client: hubClient,
-        fetchPolicy: 'no-cache',
-    });
-
-    const [cancelListingMutation] = useMutation(CANCEL_LISTING, {
-        client: hubClient,
-        fetchPolicy: 'no-cache',
-    });
-
-    // Retry wrapper for mutations with testnet timestamp issues
-    const withRetry = async (mutationFn, variables, options = {}) => {
-        const { maxRetries = 5, delay = 3000, onSuccess, onError, setLoading } = options;
-        const toastId = toast.loading('Processing...');
-        
-        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    // Fetch ticket details directly from blockchain
+    useEffect(() => {
+        const fetchTicket = async () => {
+            if (!isReady) return;
+            
             try {
-                const result = await mutationFn({ variables });
-                
-                // Check if there's an error in the response
-                if (result.errors && result.errors.length > 0) {
-                    const errorMsg = result.errors[0].message || 'Unknown error';
-                    const isRetryable = errorMsg.includes('timestamp') || 
-                                       errorMsg.includes('future') || 
-                                       errorMsg.includes('quorum') ||
-                                       errorMsg.includes('malformed');
-                    
-                    if (isRetryable && attempt < maxRetries) {
-                        toast.loading(`Retry ${attempt}/${maxRetries}... waiting ${delay/1000}s`, { id: toastId });
-                        await new Promise(r => setTimeout(r, delay));
-                        continue;
-                    }
-                    throw new Error(errorMsg);
-                }
-                
-                // Success!
-                toast.success('Success!', { id: toastId });
-                if (onSuccess) onSuccess(result);
-                return result;
-                
+                console.log(`[ListingCard] Fetching ticket ${ticketId} from blockchain...`);
+                const result = await query(GET_TICKET_QUERY, { ticketId });
+                setTicket(result?.ticket);
             } catch (err) {
-                const errorMsg = err.message || 'Unknown error';
-                const isRetryable = errorMsg.includes('timestamp') || 
-                                   errorMsg.includes('future') || 
-                                   errorMsg.includes('quorum') ||
-                                   errorMsg.includes('malformed');
-                
-                if (isRetryable && attempt < maxRetries) {
-                    toast.loading(`Retry ${attempt}/${maxRetries}... waiting ${delay/1000}s`, { id: toastId });
-                    await new Promise(r => setTimeout(r, delay));
-                    continue;
-                }
-                
-                // Final failure
-                toast.error(`Failed: ${errorMsg}`, { id: toastId });
-                if (onError) onError(err);
-                if (setLoading) setLoading(false);
-                return null;
+                console.error(`[ListingCard] Failed to fetch ticket ${ticketId}:`, err);
+            } finally {
+                setTicketLoading(false);
             }
-        }
-    };
+        };
+        
+        fetchTicket();
+    }, [ticketId, query, isReady]);
 
     const handleBuy = async () => {
         if (!isConnected) {
@@ -326,13 +481,15 @@ const ListingCard = ({ ticketId, listing, hubClient, isConnected, openWalletModa
         }
         setBuying(true);
         const price = listing?.price || '0';
-        await withRetry(buyTicketMutation, { ticketId, buyer: userAddress, price }, {
-            onSuccess: () => {
-                setBuying(false);
-                onBought();
-            },
-            setLoading: setBuying,
-        });
+        
+        try {
+            console.log('[ListingCard] Buying ticket via direct blockchain mutation...');
+            await mutate(BUY_TICKET_MUTATION, { ticketId, buyer: userAddress, price });
+            onBought();
+        } catch (err) {
+            console.error('[ListingCard] Buy failed:', err);
+        }
+        
         setBuying(false);
     };
 
@@ -342,20 +499,19 @@ const ListingCard = ({ ticketId, listing, hubClient, isConnected, openWalletModa
             return;
         }
         setCancelling(true);
-        await withRetry(cancelListingMutation, { ticketId, seller: userAddress }, {
-            onSuccess: () => {
-                setCancelling(false);
-                onBought();
-            },
-            setLoading: setCancelling,
-        });
+        
+        try {
+            console.log('[ListingCard] Cancelling listing via direct blockchain mutation...');
+            await mutate(CANCEL_LISTING_MUTATION, { ticketId, seller: userAddress });
+            onBought();
+        } catch (err) {
+            console.error('[ListingCard] Cancel failed:', err);
+        }
+        
         setCancelling(false);
     };
-
-    const ticket = ticketData?.ticket;
     
     // Check if user owns this listing by comparing wallet addresses (seller field)
-    // This works even in demo mode where all users share the same hub chain
     const isOwnListing = isConnected && listing?.seller && userAddress && 
         listing.seller.toLowerCase() === userAddress.toLowerCase();
 

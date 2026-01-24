@@ -17,7 +17,7 @@ use linera_sdk::{
     views::View,
     Service, ServiceRuntime,
 };
-use ticketing::{EventId, Operation, TicketId, TicketOutput, TicketingAbi};
+use ticketing::{EventId, Operation, TicketId, TicketOutput, TicketingAbi, TicketHistory};
 use ticketing::ListingStatus;
 
 use self::state::TicketingState;
@@ -40,6 +40,8 @@ struct ListingInfo {
     seller: String,
     price: String,
     status: String,
+    // Wave 6: Add event name for search
+    event_name: Option<String>,
 }
 
 impl Service for TicketingService {
@@ -144,6 +146,18 @@ impl QueryRoot {
     /// Get all active listings (filters out Cancelled/Sold)
     async fn listings(&self) -> BTreeMap<String, ListingInfo> {
         let mut map = BTreeMap::new();
+        
+        // First collect all tickets to look up event names
+        let mut ticket_event_names: BTreeMap<Vec<u8>, String> = BTreeMap::new();
+        self.state
+            .tickets
+            .for_each_index_value(|ticket_id, ticket| {
+                ticket_event_names.insert(ticket_id.id.clone(), ticket.event_name.to_string());
+                Ok(())
+            })
+            .await
+            .ok();
+        
         self.state
             .listings
             .for_each_index_value(|ticket_id, listing| {
@@ -153,6 +167,7 @@ impl QueryRoot {
                     return Ok(());
                 }
                 let ticket_key = STANDARD_NO_PAD.encode(ticket_id.id.clone());
+                let event_name = ticket_event_names.get(&ticket_id.id).cloned();
                 map.insert(
                     ticket_key.clone(),
                     ListingInfo {
@@ -161,6 +176,7 @@ impl QueryRoot {
                         seller: listing.seller,
                         price: listing.price.to_string(),
                         status: "Active".to_string(),
+                        event_name,
                     },
                 );
                 Ok(())
@@ -168,6 +184,12 @@ impl QueryRoot {
             .await
             .unwrap();
         map
+    }
+
+    /// Wave 6: Get ticket history (ownership and price history)
+    async fn ticket_history(&self, ticket_id: String) -> Option<TicketHistory> {
+        let decoded = decode_ticket_id(&ticket_id);
+        self.state.ticket_history.get(&decoded).await.unwrap()
     }
 
     /// Get tickets owned by a specific chain
@@ -248,6 +270,7 @@ struct MutationRoot {
 #[Object]
 impl MutationRoot {
     /// Create a new event (caller becomes organizer)
+    /// Wave 6: Added optional image_url, end_time, base_price
     async fn create_event(
         &self,
         event_id: String,
@@ -257,6 +280,9 @@ impl MutationRoot {
         start_time: i32,
         royalty_bps: i32,
         max_tickets: i32,
+        image_url: Option<String>,
+        end_time: Option<i32>,
+        base_price: Option<String>,
     ) -> String {
         let operation = Operation::CreateEvent {
             event_id: EventId { value: event_id.clone() },
@@ -266,6 +292,9 @@ impl MutationRoot {
             start_time: start_time as u64,
             royalty_bps: royalty_bps as u16,
             max_tickets: max_tickets as u32,
+            image_url,
+            end_time: end_time.map(|t| t as u64),
+            base_price: base_price.and_then(|p| p.parse::<u128>().ok()),
         };
         self.runtime.schedule_operation(&operation);
         format!("Event '{}' creation scheduled", event_id)
@@ -273,12 +302,14 @@ impl MutationRoot {
 
     /// Mint a ticket (caller must be event organizer)
     /// owner: wallet address of the minter (for demo mode ownership tracking)
+    /// Wave 6: Added optional image_url
     async fn mint_ticket(
         &self,
         event_id: String,
         seat: String,
         blob_hash: String,
         owner: String,
+        image_url: Option<String>,
     ) -> String {
         // Parse blob hash from hex string (simple manual hex decode)
         let blob_hash_clean = blob_hash.strip_prefix("0x").unwrap_or(&blob_hash);
@@ -298,6 +329,7 @@ impl MutationRoot {
             seat: seat.clone(),
             blob_hash,
             owner,
+            image_url,
         };
         self.runtime.schedule_operation(&operation);
         format!("Ticket for seat '{}' in event '{}' minting scheduled", seat, event_id)

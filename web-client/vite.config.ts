@@ -20,6 +20,12 @@ export default defineConfig({
       'Cross-Origin-Opener-Policy': 'same-origin',
       'Cross-Origin-Embedder-Policy': 'require-corp',
     },
+    // Configure HMR to use the same origin to avoid COEP issues
+    hmr: {
+      protocol: 'ws',
+      host: 'localhost',
+      port: 5173, // Use same port as dev server
+    },
     // Proxy hub chain queries to local node service
     // This enables serverless marketplace reads without running a separate backend
     proxy: {

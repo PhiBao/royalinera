@@ -1,32 +1,21 @@
-import React, { useState, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { gql } from '@apollo/client/core';
-import { useQuery, useMutation } from '@apollo/client/react';
-import { useWallet } from '../providers/WalletProvider';
-import { useGraphQL } from '../providers/GraphQLProvider';
-import { Ticket as TicketIcon, Send, DollarSign, Tag, X, Wallet, Loader2, RefreshCw, AlertTriangle, XCircle } from 'lucide-react';
+import { useWallet } from '../contexts/WalletContext';
+import { useLinera } from '../providers/LineraProvider';
+import { Ticket as TicketIcon, Send, DollarSign, Tag, X, Wallet, Loader2, RefreshCw, AlertTriangle, XCircle, History, Filter, Search } from 'lucide-react';
+import TicketHistory from '../components/TicketHistory';
 
-// GraphQL Queries and Mutations
-const GET_MY_TICKETS = gql`
-  query GetMyTickets {
-    myTickets
-  }
-`;
-
-const GET_TICKETS_BY_OWNER = gql`
+// GraphQL queries as plain strings for direct blockchain calls
+const GET_TICKETS_BY_OWNER_QUERY = `
   query GetTicketsByOwner($owner: String!) {
     ticketsByOwner(owner: $owner)
   }
 `;
 
-const GET_LISTINGS = gql`
-  query GetListings {
-    listings
-  }
-`;
+const GET_LISTINGS_QUERY = `query GetListings { listings }`;
 
-const GET_TICKET = gql`
+const GET_TICKET_QUERY = `
   query GetTicket($ticketId: String!) {
     ticket(ticketId: $ticketId) {
       ticketId
@@ -42,19 +31,19 @@ const GET_TICKET = gql`
   }
 `;
 
-const TRANSFER_TICKET = gql`
+const TRANSFER_TICKET_MUTATION = `
   mutation TransferTicket($ticketId: String!, $newOwner: String!, $buyerChain: String!, $salePrice: String) {
     transferTicket(ticketId: $ticketId, newOwner: $newOwner, buyerChain: $buyerChain, salePrice: $salePrice)
   }
 `;
 
-const LIST_FOR_SALE = gql`
+const LIST_FOR_SALE_MUTATION = `
   mutation CreateListing($ticketId: String!, $seller: String!, $price: String!) {
     createListing(ticketId: $ticketId, seller: $seller, price: $price)
   }
 `;
 
-const CANCEL_LISTING = gql`
+const CANCEL_LISTING_MUTATION = `
   mutation CancelListing($ticketId: String!, $seller: String!) {
     cancelListing(ticketId: $ticketId, seller: $seller)
   }
@@ -240,25 +229,128 @@ const styles = {
 
 const MyTickets = () => {
     const navigate = useNavigate();
-    const { isConnected, openWalletModal, chainId: userChainId, hubChainId, address: userAddress } = useWallet();
-    const { hubClient } = useGraphQL();
+    const location = useLocation();
+    const { isConnected, openWalletModal, chainId: userChainId, owner: userAddress } = useWallet();
+    const { query, queryHub, mutate, isReady } = useLinera();
     
     const [actionTicket, setActionTicket] = useState(null);
     const [actionType, setActionType] = useState(null);
     const [transferForm, setTransferForm] = useState({ toChain: '', toAddress: '' });
     const [listForm, setListForm] = useState({ price: '' });
 
-    // Use ticketsByOwner query to filter by wallet address (works in demo mode)
-    const { data, loading, refetch } = useQuery(GET_TICKETS_BY_OWNER, {
-        client: hubClient,
-        variables: { owner: userAddress || '' },
-        skip: !isConnected || !userAddress,
-    });
+    // Direct blockchain query state
+    const [data, setData] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [listingsData, setListingsData] = useState(null);
 
-    // Fetch all listings to check which tickets are listed
-    const { data: listingsData, refetch: refetchListings } = useQuery(GET_LISTINGS, {
-        client: hubClient,
-    });
+    // Error state for connection issues
+    const [connectionError, setConnectionError] = useState(null);
+    
+    // Track if we came from minting (need to poll for new ticket)
+    const [isPolling, setIsPolling] = useState(false);
+
+    // Fetch tickets directly from blockchain
+    const fetchTickets = useCallback(async () => {
+        if (!isReady || !isConnected || !userAddress) {
+            setLoading(false);
+            return;
+        }
+        
+        setLoading(true);
+        setConnectionError(null);
+        try {
+            console.log('[MyTickets] Fetching tickets from hub chain...');
+            console.log('[MyTickets] Owner address:', userAddress);
+            // Use queryHub to get tickets from the marketplace/hub chain where they're stored
+            const result = await queryHub(GET_TICKETS_BY_OWNER_QUERY, { owner: userAddress });
+            console.log('[MyTickets] Hub response:', result);
+            setData(result);
+        } catch (err) {
+            console.error('[MyTickets] Hub query failed:', err);
+            // Check if it's a connection error
+            if (err.message.includes('CONNECTION_REFUSED') || err.message.includes('Failed to fetch') || err.message.includes('linera service')) {
+                setConnectionError('Cannot connect to Linera service. Please make sure "linera service --port 8080" is running.');
+            } else {
+                setConnectionError(err.message);
+            }
+        } finally {
+            setLoading(false);
+        }
+    }, [queryHub, isReady, isConnected, userAddress]);
+
+    // Fetch listings from hub chain
+    const fetchListings = useCallback(async () => {
+        if (!isReady) return;
+        
+        try {
+            console.log('[MyTickets] Fetching listings from hub chain...');
+            const result = await queryHub(GET_LISTINGS_QUERY);
+            setListingsData(result);
+        } catch (err) {
+            console.error('[MyTickets] Failed to fetch listings:', err);
+        }
+    }, [queryHub, isReady]);
+
+    // Track initial ticket count for polling
+    const initialTicketCountRef = useRef(null);
+
+    useEffect(() => {
+        fetchTickets();
+        fetchListings();
+    }, [fetchTickets, fetchListings]);
+
+    // Poll for new ticket if we came from minting
+    useEffect(() => {
+        const cameFromMint = location.state?.refresh && location.state?.newTicketAt;
+        if (!cameFromMint || !isReady || !isConnected || !userAddress) return;
+        
+        console.log('[MyTickets] Came from mint, will poll for new ticket...');
+        setIsPolling(true);
+        
+        // Store the initial count when we first arrive
+        if (initialTicketCountRef.current === null && data?.ticketsByOwner) {
+            initialTicketCountRef.current = data.ticketsByOwner.length;
+        }
+        
+        let attempts = 0;
+        const maxAttempts = 10;
+        const pollInterval = 2000; // 2 seconds
+        
+        const poll = setInterval(async () => {
+            attempts++;
+            console.log(`[MyTickets] Polling attempt ${attempts}/${maxAttempts}...`);
+            
+            try {
+                const result = await queryHub(GET_TICKETS_BY_OWNER_QUERY, { owner: userAddress });
+                const currentCount = result?.ticketsByOwner?.length || 0;
+                const expectedCount = (initialTicketCountRef.current || 0) + 1;
+                
+                console.log(`[MyTickets] Current tickets: ${currentCount}, expected: ${expectedCount}`);
+                
+                if (currentCount >= expectedCount) {
+                    console.log('[MyTickets] New ticket found!');
+                    setData(result);
+                    setIsPolling(false);
+                    clearInterval(poll);
+                    // Clear the navigation state
+                    navigate(location.pathname, { replace: true, state: {} });
+                    toast.success('New ticket loaded!');
+                }
+            } catch (err) {
+                console.error('[MyTickets] Poll error:', err);
+            }
+            
+            if (attempts >= maxAttempts) {
+                console.log('[MyTickets] Max poll attempts reached');
+                setIsPolling(false);
+                clearInterval(poll);
+                // Try one more fetch
+                fetchTickets();
+            }
+        }, pollInterval);
+        
+        return () => clearInterval(poll);
+    }, [location.state, isReady, isConnected, userAddress, queryHub, data, navigate, location.pathname, fetchTickets]);
 
     // Build a map of ticketId -> listing info
     const listingsMap = useMemo(() => {
@@ -270,91 +362,45 @@ const MyTickets = () => {
     }, [listingsData]);
 
     const handleRefetch = () => {
-        refetch();
-        refetchListings();
+        fetchTickets();
+        fetchListings();
     };
-
-    // Retry wrapper for mutations with testnet timestamp issues
-    const withRetry = async (mutationFn, variables, options = {}) => {
-        const { maxRetries = 5, delay = 3000, onSuccess, onError, setLoading } = options;
-        const toastId = toast.loading('Processing...');
-        
-        for (let attempt = 1; attempt <= maxRetries; attempt++) {
-            try {
-                const result = await mutationFn({ variables });
-                
-                // Check if there's an error in the response
-                if (result.errors && result.errors.length > 0) {
-                    const errorMsg = result.errors[0].message || 'Unknown error';
-                    const isRetryable = errorMsg.includes('timestamp') || 
-                                       errorMsg.includes('future') || 
-                                       errorMsg.includes('quorum') ||
-                                       errorMsg.includes('malformed');
-                    
-                    if (isRetryable && attempt < maxRetries) {
-                        toast.loading(`Retry ${attempt}/${maxRetries}... waiting ${delay/1000}s`, { id: toastId });
-                        await new Promise(r => setTimeout(r, delay));
-                        continue;
-                    }
-                    throw new Error(errorMsg);
-                }
-                
-                // Success!
-                toast.success('Success!', { id: toastId });
-                if (onSuccess) onSuccess(result);
-                return result;
-                
-            } catch (err) {
-                const errorMsg = err.message || 'Unknown error';
-                const isRetryable = errorMsg.includes('timestamp') || 
-                                   errorMsg.includes('future') || 
-                                   errorMsg.includes('quorum') ||
-                                   errorMsg.includes('malformed');
-                
-                if (isRetryable && attempt < maxRetries) {
-                    toast.loading(`Retry ${attempt}/${maxRetries}... waiting ${delay/1000}s`, { id: toastId });
-                    await new Promise(r => setTimeout(r, delay));
-                    continue;
-                }
-                
-                // Final failure
-                toast.error(`Failed: ${errorMsg}`, { id: toastId });
-                if (onError) onError(err);
-                if (setLoading) setLoading(false);
-                return null;
-            }
-        }
-    };
-
-    const [transferTicketMutation] = useMutation(TRANSFER_TICKET, {
-        client: hubClient,
-        fetchPolicy: 'no-cache',
-    });
-
-    const [listForSaleMutation] = useMutation(LIST_FOR_SALE, {
-        client: hubClient,
-        fetchPolicy: 'no-cache',
-    });
-
-    const [cancelListingMutation] = useMutation(CANCEL_LISTING, {
-        client: hubClient,
-        fetchPolicy: 'no-cache',
-    });
 
     // State for loading indicators
     const [transferring, setTransferring] = useState(false);
     const [listing, setListing] = useState(false);
+    
+    // Filter state
+    const [filterStatus, setFilterStatus] = useState('all'); // 'all', 'listed', 'not-listed'
+    const [searchQuery, setSearchQuery] = useState('');
 
     const handleCancelListing = async (ticketId) => {
-        await withRetry(cancelListingMutation, { ticketId, seller: userAddress }, {
-            onSuccess: () => handleRefetch(),
-        });
+        try {
+            console.log('[MyTickets] Cancelling listing via direct blockchain mutation...');
+            await mutate(CANCEL_LISTING_MUTATION, { ticketId, seller: userAddress });
+            handleRefetch();
+        } catch (err) {
+            console.error('[MyTickets] Cancel listing failed:', err);
+        }
     };
 
     const ticketIds = useMemo(() => {
         if (!data?.ticketsByOwner) return [];
         return Array.isArray(data.ticketsByOwner) ? data.ticketsByOwner : [];
     }, [data]);
+    
+    // Apply filters to ticket IDs
+    const filteredTicketIds = useMemo(() => {
+        return ticketIds.filter(ticketId => {
+            const isListed = listingsMap[ticketId]?.status === 'Active';
+            
+            // Filter by listing status
+            if (filterStatus === 'listed' && !isListed) return false;
+            if (filterStatus === 'not-listed' && isListed) return false;
+            
+            return true;
+        });
+    }, [ticketIds, listingsMap, filterStatus]);
 
     const closeModal = () => {
         setActionTicket(null);
@@ -370,18 +416,21 @@ const MyTickets = () => {
             return;
         }
         setTransferring(true);
-        await withRetry(transferTicketMutation, { 
-            ticketId: actionTicket, 
-            newOwner: transferForm.toAddress,
-            buyerChain: transferForm.toChain || userChainId,
-            salePrice: null,
-        }, {
-            onSuccess: () => {
-                closeModal();
-                handleRefetch();
-            },
-            setLoading: setTransferring,
-        });
+        
+        try {
+            console.log('[MyTickets] Transferring ticket via direct blockchain mutation...');
+            await mutate(TRANSFER_TICKET_MUTATION, { 
+                ticketId: actionTicket, 
+                newOwner: transferForm.toAddress,
+                buyerChain: transferForm.toChain || userChainId,
+                salePrice: null,
+            });
+            closeModal();
+            handleRefetch();
+        } catch (err) {
+            console.error('[MyTickets] Transfer failed:', err);
+        }
+        
         setTransferring(false);
     };
 
@@ -392,17 +441,20 @@ const MyTickets = () => {
             return;
         }
         setListing(true);
-        await withRetry(listForSaleMutation, { 
-            ticketId: actionTicket, 
-            seller: userAddress, 
-            price: listForm.price 
-        }, {
-            onSuccess: () => {
-                closeModal();
-                navigate('/marketplace');
-            },
-            setLoading: setListing,
-        });
+        
+        try {
+            console.log('[MyTickets] Listing ticket via direct blockchain mutation...');
+            await mutate(LIST_FOR_SALE_MUTATION, { 
+                ticketId: actionTicket, 
+                seller: userAddress, 
+                price: listForm.price 
+            });
+            closeModal();
+            navigate('/marketplace');
+        } catch (err) {
+            console.error('[MyTickets] List failed:', err);
+        }
+        
         setListing(false);
     };
 
@@ -429,6 +481,23 @@ const MyTickets = () => {
         );
     }
 
+    if (connectionError) {
+        return (
+            <div style={styles.emptyState}>
+                <AlertTriangle size={48} style={{ color: '#f59e0b', margin: '0 auto 16px' }} />
+                <h2 style={{ fontSize: '1.5rem', fontWeight: '600', marginBottom: '8px', color: '#f59e0b' }}>Connection Error</h2>
+                <p style={{ color: '#a0a0a0', marginBottom: '16px', maxWidth: '400px' }}>{connectionError}</p>
+                <div style={{ backgroundColor: 'rgba(255,255,255,0.05)', padding: '16px', borderRadius: '8px', marginBottom: '24px', fontFamily: 'monospace', fontSize: '0.875rem', color: '#a0a0a0' }}>
+                    linera service --port 8080
+                </div>
+                <button onClick={handleRefetch} style={{ ...styles.btn, ...styles.btnPrimary, flex: 'none', padding: '12px 24px' }}>
+                    <RefreshCw size={18} />
+                    Retry
+                </button>
+            </div>
+        );
+    }
+
     return (
         <div>
             {/* Header */}
@@ -437,15 +506,102 @@ const MyTickets = () => {
                 <p style={styles.subtitle}>{ticketIds.length} ticket{ticketIds.length !== 1 ? 's' : ''} in your wallet</p>
                 
                 <div style={styles.headerActions}>
-                    <button onClick={handleRefetch} style={{ ...styles.btn, ...styles.btnSecondary, flex: 'none' }}>
-                        <RefreshCw size={16} />
-                        Refresh
+                    <button onClick={handleRefetch} disabled={isPolling} style={{ ...styles.btn, ...styles.btnSecondary, flex: 'none', opacity: isPolling ? 0.5 : 1 }}>
+                        <RefreshCw size={16} style={isPolling ? { animation: 'spin 1s linear infinite' } : {}} />
+                        {isPolling ? 'Syncing...' : 'Refresh'}
                     </button>
                     <button onClick={() => navigate('/mint')} style={{ ...styles.btn, ...styles.btnPrimary, flex: 'none' }}>
                         <TicketIcon size={16} />
                         Get More Tickets
                     </button>
                 </div>
+                {isPolling && (
+                    <p style={{ color: '#6366f1', fontSize: '0.875rem', marginTop: '12px' }}>
+                        ⏳ Waiting for new ticket to sync from blockchain...
+                    </p>
+                )}
+                
+                {/* Filter Bar */}
+                {ticketIds.length > 0 && (
+                    <div style={{ 
+                        marginTop: '24px', 
+                        display: 'flex', 
+                        alignItems: 'center',
+                        gap: '12px', 
+                        flexWrap: 'wrap',
+                        padding: '12px 16px',
+                        backgroundColor: 'rgba(255,255,255,0.02)',
+                        borderRadius: '12px',
+                        border: '1px solid rgba(255,255,255,0.05)',
+                    }}>
+                        {/* Filter Label */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <Filter size={16} style={{ color: '#6b7280' }} />
+                            <span style={{ fontSize: '0.875rem', color: '#a0a0a0' }}>Filter:</span>
+                        </div>
+                        
+                        {/* Filter Buttons */}
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                            <button
+                                onClick={() => setFilterStatus('all')}
+                                style={{
+                                    padding: '8px 14px',
+                                    backgroundColor: filterStatus === 'all' ? 'rgba(99, 102, 241, 0.2)' : 'rgba(255,255,255,0.05)',
+                                    border: filterStatus === 'all' ? '1px solid #6366f1' : '1px solid rgba(255,255,255,0.1)',
+                                    borderRadius: '8px',
+                                    color: filterStatus === 'all' ? '#6366f1' : '#a0a0a0',
+                                    fontSize: '0.8rem',
+                                    cursor: 'pointer',
+                                }}
+                            >
+                                All ({ticketIds.length})
+                            </button>
+                            <button
+                                onClick={() => setFilterStatus('listed')}
+                                style={{
+                                    padding: '8px 14px',
+                                    backgroundColor: filterStatus === 'listed' ? 'rgba(16, 185, 129, 0.2)' : 'rgba(255,255,255,0.05)',
+                                    border: filterStatus === 'listed' ? '1px solid #10b981' : '1px solid rgba(255,255,255,0.1)',
+                                    borderRadius: '8px',
+                                    color: filterStatus === 'listed' ? '#10b981' : '#a0a0a0',
+                                    fontSize: '0.8rem',
+                                    cursor: 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '6px',
+                                }}
+                            >
+                                <Tag size={14} />
+                                Listed
+                            </button>
+                            <button
+                                onClick={() => setFilterStatus('not-listed')}
+                                style={{
+                                    padding: '8px 14px',
+                                    backgroundColor: filterStatus === 'not-listed' ? 'rgba(99, 102, 241, 0.2)' : 'rgba(255,255,255,0.05)',
+                                    border: filterStatus === 'not-listed' ? '1px solid #6366f1' : '1px solid rgba(255,255,255,0.1)',
+                                    borderRadius: '8px',
+                                    color: filterStatus === 'not-listed' ? '#6366f1' : '#a0a0a0',
+                                    fontSize: '0.8rem',
+                                    cursor: 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '6px',
+                                }}
+                            >
+                                <TicketIcon size={14} />
+                                Not Listed
+                            </button>
+                        </div>
+                        
+                        {/* Results count when filtered */}
+                        {filterStatus !== 'all' && (
+                            <span style={{ fontSize: '0.75rem', color: '#6b7280', marginLeft: 'auto' }}>
+                                Showing {filteredTicketIds.length} of {ticketIds.length}
+                            </span>
+                        )}
+                    </div>
+                )}
             </div>
 
             {/* Tickets Grid */}
@@ -458,14 +614,22 @@ const MyTickets = () => {
                         Browse Events
                     </button>
                 </div>
+            ) : filteredTicketIds.length === 0 ? (
+                <div style={styles.emptyState}>
+                    <Filter size={48} style={{ color: '#4b5563', margin: '0 auto 16px' }} />
+                    <h3 style={{ fontSize: '1.25rem', fontWeight: '600', marginBottom: '8px' }}>No matching tickets</h3>
+                    <p style={{ color: '#a0a0a0', marginBottom: '24px' }}>Try changing your filter selection</p>
+                    <button onClick={() => setFilterStatus('all')} style={{ ...styles.btn, ...styles.btnSecondary, flex: 'none', padding: '12px 24px' }}>
+                        Show All Tickets
+                    </button>
+                </div>
             ) : (
                 <div style={styles.grid}>
-                    {ticketIds.map((ticketId) => (
+                    {filteredTicketIds.map((ticketId) => (
                         <TicketCard
                             key={ticketId}
                             ticketId={ticketId}
                             listing={listingsMap[ticketId]}
-                            hubClient={hubClient}
                             onTransfer={() => { setActionTicket(ticketId); setActionType('transfer'); }}
                             onList={() => { setActionTicket(ticketId); setActionType('list'); }}
                             onCancelListing={handleCancelListing}
@@ -578,14 +742,31 @@ const MyTickets = () => {
     );
 };
 
-// Ticket Card Component
-const TicketCard = ({ ticketId, listing, hubClient, onTransfer, onList, onCancelListing }) => {
-    const { data, loading } = useQuery(GET_TICKET, {
-        client: hubClient,
-        variables: { ticketId },
-    });
+// Ticket Card Component - uses hub chain queries for ticket data
+const TicketCard = ({ ticketId, listing, onTransfer, onList, onCancelListing }) => {
+    const { queryHub, isReady } = useLinera();
+    const [ticket, setTicket] = useState(null);
+    const [loading, setLoading] = useState(true);
 
-    const ticket = data?.ticket;
+    // Fetch ticket details from hub chain
+    useEffect(() => {
+        const fetchTicket = async () => {
+            if (!isReady) return;
+            
+            try {
+                console.log(`[TicketCard] Fetching ticket ${ticketId} from hub chain...`);
+                const result = await queryHub(GET_TICKET_QUERY, { ticketId });
+                setTicket(result?.ticket);
+            } catch (err) {
+                console.error(`[TicketCard] Failed to fetch ticket ${ticketId}:`, err);
+            } finally {
+                setLoading(false);
+            }
+        };
+        
+        fetchTicket();
+    }, [ticketId, queryHub, isReady]);
+
     // Check if ticket is listed - listing is passed from parent, status must be 'Active'
     const isListed = listing && listing.status === 'Active';
 
@@ -603,24 +784,6 @@ const TicketCard = ({ ticketId, listing, hubClient, onTransfer, onList, onCancel
 
     return (
         <div style={styles.card}>
-            <div style={styles.cardImage}>
-                <TicketIcon size={48} style={{ color: 'rgba(255,255,255,0.3)' }} />
-                {isListed && (
-                    <div style={{
-                        position: 'absolute',
-                        top: '12px',
-                        right: '12px',
-                        background: 'linear-gradient(135deg, #10b981, #059669)',
-                        color: '#ffffff',
-                        padding: '4px 10px',
-                        borderRadius: '12px',
-                        fontSize: '0.75rem',
-                        fontWeight: '600',
-                    }}>
-                        Listed: {listing.price}
-                    </div>
-                )}
-            </div>
             <div style={styles.cardContent}>
                 <h3 style={styles.cardTitle}>{ticket?.eventName || 'Unknown Event'}</h3>
                 <p style={styles.cardSubtitle}>{ticket?.seat || 'General Admission'}</p>
@@ -668,6 +831,11 @@ const TicketCard = ({ ticketId, listing, hubClient, onTransfer, onList, onCancel
                         </button>
                     </div>
                 )}
+
+                {/* Ticket History & Provenance */}
+                <div style={{ marginTop: '16px' }}>
+                    <TicketHistory ticketId={ticketId} />
+                </div>
             </div>
         </div>
     );

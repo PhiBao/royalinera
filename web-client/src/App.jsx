@@ -1,11 +1,10 @@
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
-import { WalletProvider } from './providers/WalletProvider';
-import { GraphQLProvider } from './providers/GraphQLProvider';
+import { WalletProvider, useWallet } from './contexts/WalletContext';
+import { LineraProvider } from './providers/LineraProvider';
 import Layout from './components/Layout';
 import WalletModal from './components/WalletModalNew';
-import { useWallet } from './providers/WalletProvider';
 import Home from './pages/Home';
 import Events from './pages/EventsNew';
 import Mint from './pages/MintNew';
@@ -46,9 +45,9 @@ function AppContent() {
 function App() {
   return (
     <WalletProvider>
-      <GraphQLProvider>
+      <LineraProvider>
         <AppContent />
-      </GraphQLProvider>
+      </LineraProvider>
     </WalletProvider>
   );
 }

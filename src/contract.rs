@@ -91,6 +91,9 @@ impl Contract for TicketingContract {
                 start_time,
                 royalty_bps,
                 max_tickets,
+                image_url,
+                end_time,
+                base_price,
             } => {
                 let event = Event {
                     id: event_id.clone(),
@@ -102,6 +105,9 @@ impl Contract for TicketingContract {
                     royalty_bps,
                     max_tickets,
                     minted_tickets: 0,
+                    image_url,
+                    end_time,
+                    base_price,
                 };
 
                 if is_hub {
@@ -120,10 +126,11 @@ impl Contract for TicketingContract {
                 seat,
                 blob_hash,
                 owner,
+                image_url,
             } => {
                 // Minting happens on the hub (where events live)
                 if is_hub {
-                    self.mint_ticket(caller_chain, owner, event_id, seat, blob_hash).await;
+                    self.mint_ticket(caller_chain, owner, event_id, seat, blob_hash, image_url).await;
                 } else {
                     // Forward mint request to hub
                     // The hub will mint the ticket and we'll reference it
@@ -133,6 +140,7 @@ impl Contract for TicketingContract {
                         event_id,
                         seat,
                         blob_hash,
+                        image_url,
                     });
                     eprintln!("[FORWARD] MintTicket forwarded to hub");
                 }
@@ -306,10 +314,10 @@ impl Contract for TicketingContract {
                 }
             }
             
-            Message::MintTicketRequest { minter_chain, owner, event_id, seat, blob_hash } => {
+            Message::MintTicketRequest { minter_chain, owner, event_id, seat, blob_hash, image_url } => {
                 if is_hub {
                     // Hub processes mint request from user chain
-                    self.mint_ticket(minter_chain, owner, event_id, seat, blob_hash).await;
+                    self.mint_ticket(minter_chain, owner, event_id, seat, blob_hash, image_url).await;
                     eprintln!("[HUB] MintTicketRequest processed from remote chain");
                 } else {
                     eprintln!("[WARN] MintTicketRequest received on non-hub chain");
@@ -490,6 +498,7 @@ impl TicketingContract {
         event_id: EventId,
         seat: String,
         blob_hash: DataBlobHash,
+        image_url: Option<String>,
     ) {
         let event = self
             .state
@@ -516,6 +525,9 @@ impl TicketingContract {
         )
         .expect("failed to create ticket id");
 
+        // Get current timestamp for minted_at
+        let minted_at = self.runtime.system_time().micros() / 1000; // Convert to ms
+
         let owner_chain = minter_chain.clone();
         let ticket = Ticket {
             ticket_id: ticket_id.clone(),
@@ -525,14 +537,31 @@ impl TicketingContract {
             organizer_chain: event.organizer_chain.clone(),
             owner_chain: owner_chain.clone(),
             owner: owner.clone(),
-            minter_chain,
+            minter_chain: minter_chain.clone(),
             royalty_bps: event.royalty_bps,
             metadata_hash: blob_hash,
             last_sale_price: None,
+            image_url,
+            minted_at,
         };
 
         // Store ticket on hub
         self.state.tickets.insert(&ticket_id, ticket.clone()).unwrap();
+
+        // Wave 6: Create initial ownership history record
+        use ticketing::{TicketHistory, OwnershipRecord, AcquisitionType};
+        let ownership_record = OwnershipRecord {
+            owner: owner.clone(),
+            owner_chain: owner_chain.clone(),
+            acquired_at: minted_at,
+            price_paid: None,
+            acquisition_type: AcquisitionType::Minted,
+        };
+        let history = TicketHistory {
+            ownership_history: vec![ownership_record],
+            price_history: vec![],
+        };
+        self.state.ticket_history.insert(&ticket_id, history).unwrap();
 
         // Track ownership on hub
         let mut owned = self
@@ -631,6 +660,43 @@ impl TicketingContract {
         if self.state.listings.get(&ticket.ticket_id).await.unwrap().is_some() {
             self.state.listings.remove(&ticket.ticket_id).unwrap();
         }
+
+        // Wave 6: Record ownership transfer in history
+        let transfer_time = self.runtime.system_time().micros() / 1000; // Convert to ms
+        use ticketing::{TicketHistory, OwnershipRecord, AcquisitionType, PriceHistoryEntry, PriceEventType};
+        
+        let mut history = self.state.ticket_history
+            .get(&ticket.ticket_id)
+            .await
+            .unwrap()
+            .unwrap_or_default();
+        
+        // Add new ownership record
+        let acquisition_type = if sale_price.is_some() {
+            AcquisitionType::Purchased
+        } else {
+            AcquisitionType::Transferred
+        };
+        let ownership_record = OwnershipRecord {
+            owner: new_owner.clone(),
+            owner_chain: buyer_chain.clone(),
+            acquired_at: transfer_time,
+            price_paid: sale_price.map(|p| p.to_string()),
+            acquisition_type,
+        };
+        history.ownership_history.push(ownership_record);
+        
+        // Add price history entry if this was a sale
+        if let Some(price) = sale_price {
+            let price_entry = PriceHistoryEntry {
+                price: price.to_string(),
+                timestamp: transfer_time,
+                event_type: PriceEventType::Sold,
+            };
+            history.price_history.push(price_entry);
+        }
+        
+        self.state.ticket_history.insert(&ticket.ticket_id, history).unwrap();
 
         // Create updated ticket with new owner
         let mut updated_ticket = ticket.clone();
@@ -747,6 +813,30 @@ impl TicketingContract {
             status: ListingStatus::Active,
         };
         self.state.listings.insert(&ticket_id, listing.clone()).unwrap();
+        
+        // Wave 6: Record price history for listing
+        use ticketing::{TicketHistory, PriceHistoryEntry, PriceEventType};
+        let list_time = self.runtime.system_time().micros() / 1000;
+        
+        let mut history = self.state.ticket_history
+            .get(&ticket_id)
+            .await
+            .unwrap()
+            .unwrap_or_default();
+        
+        // Determine if this is a relist (has previous price history)
+        let event_type = if history.price_history.is_empty() {
+            PriceEventType::Listed
+        } else {
+            PriceEventType::Relisted
+        };
+        
+        history.price_history.push(PriceHistoryEntry {
+            price: price.to_string(),
+            timestamp: list_time,
+            event_type,
+        });
+        self.state.ticket_history.insert(&ticket_id, history).unwrap();
         
         // Emit listing to stream for subscribers to sync
         self.runtime.emit(

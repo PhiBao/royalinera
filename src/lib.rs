@@ -78,6 +78,10 @@ pub enum Operation {
         start_time: u64,
         royalty_bps: u16,
         max_tickets: u32,
+        // Wave 6: Enhanced metadata
+        image_url: Option<String>,
+        end_time: Option<u64>,
+        base_price: Option<u128>,
     },
     /// Mints a ticket for a seat within an event.
     /// owner: wallet address of the minter (for demo mode)
@@ -86,6 +90,8 @@ pub enum Operation {
         seat: String,
         blob_hash: DataBlobHash,
         owner: String,
+        // Wave 6: Enhanced metadata
+        image_url: Option<String>,
     },
     /// Transfers a ticket that currently resides on this chain.
     /// owner: wallet address of the current owner (must match ticket.owner)
@@ -187,6 +193,8 @@ pub enum Message {
         event_id: EventId,
         seat: String,
         blob_hash: DataBlobHash,
+        // Wave 6: Enhanced metadata
+        image_url: Option<String>,
     },
     /// Mint ticket notification to hub (for tracking)
     MintTicketOnHub {
@@ -208,6 +216,66 @@ pub struct Event {
     pub royalty_bps: u16,
     pub max_tickets: u32,
     pub minted_tickets: u32,
+    // === Wave 6: Enhanced Metadata ===
+    /// Optional image URL for the event
+    pub image_url: Option<String>,
+    /// Optional end time for event filtering
+    pub end_time: Option<u64>,
+    /// Base price for tickets (for filtering) - stored as u128 but not exposed via GraphQL
+    #[graphql(skip)]
+    pub base_price: Option<u128>,
+}
+
+/// A record of ownership for a ticket (Wave 6: Provenance tracking)
+#[derive(Debug, Serialize, Deserialize, Clone, SimpleObject, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OwnershipRecord {
+    /// Owner wallet address
+    pub owner: String,
+    /// Owner's chain ID
+    pub owner_chain: String,
+    /// Timestamp when ownership was acquired (Unix ms)
+    pub acquired_at: u64,
+    /// Price paid as string (None for minted tickets)
+    pub price_paid: Option<String>,
+    /// How ownership was acquired
+    pub acquisition_type: AcquisitionType,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, async_graphql::Enum)]
+pub enum AcquisitionType {
+    Minted,
+    Purchased,
+    Transferred,
+}
+
+/// Price history entry for a ticket (Wave 6)
+#[derive(Debug, Serialize, Deserialize, Clone, SimpleObject, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PriceHistoryEntry {
+    /// Price at this point (as string for GraphQL)
+    pub price: String,
+    /// Timestamp (Unix ms)
+    pub timestamp: u64,
+    /// Type of price event
+    pub event_type: PriceEventType,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, async_graphql::Enum)]
+pub enum PriceEventType {
+    Listed,
+    Sold,
+    Relisted,
+}
+
+/// Full ticket history including ownership and price changes (Wave 6)
+#[derive(Debug, Serialize, Deserialize, Clone, SimpleObject, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TicketHistory {
+    /// All ownership records in chronological order
+    pub ownership_history: Vec<OwnershipRecord>,
+    /// All price events in chronological order
+    pub price_history: Vec<PriceHistoryEntry>,
 }
 
 /// Ticket metadata alongside royalty bookkeeping.
@@ -229,6 +297,11 @@ pub struct Ticket {
     pub royalty_bps: u16,
     pub metadata_hash: DataBlobHash,
     pub last_sale_price: Option<u128>,
+    // === Wave 6: Enhanced Metadata ===
+    /// Optional image URL for the ticket
+    pub image_url: Option<String>,
+    /// Timestamp when ticket was minted (Unix ms)
+    pub minted_at: u64,
 }
 
 /// Marketplace listing for a ticket.
@@ -266,6 +339,9 @@ pub struct TicketOutput {
     pub royalty_bps: u16,
     pub payload: Vec<u8>,
     pub last_sale_price: Option<String>,
+    // === Wave 6: Enhanced Metadata ===
+    pub image_url: Option<String>,
+    pub minted_at: String,
 }
 
 impl TicketOutput {
@@ -284,6 +360,8 @@ impl TicketOutput {
             royalty_bps: ticket.royalty_bps,
             payload,
             last_sale_price: ticket.last_sale_price.map(|p| p.to_string()),
+            image_url: ticket.image_url,
+            minted_at: ticket.minted_at.to_string(),
         }
     }
 }

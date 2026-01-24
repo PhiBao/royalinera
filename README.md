@@ -78,10 +78,11 @@ Connects to Conway Testnet via:
 - **Network Config**: Downloaded from `https://faucet.testnet-conway.linera.net/network.json`
 - **Deployment**: `linera publish-and-create` with marketplace chain parameters
 
-**Latest Deployment:**
+**Latest Deployment (Wave 6):**
 - Chain ID: `72f9d0af181a93b93aed812c8dbd12cba13d73cac273d05fc20391a9e7f9dbf3`
-- Application ID: `6c15a3503c97265c6de4a3a5cc28d2074f4c45cea4880ced82132443b96768fb`
+- Application ID: `8fa9a02f7552969ad7c217418082becf0c04b4041de185e683e90894822918a1`
 - All mutations tested and working ✅
+- Ticket history & provenance tracking ✅
 
 ## Project Structure
 - `src/lib.rs` – ABI definitions (events, tickets, listings, messages, stream events)
@@ -100,9 +101,12 @@ Connects to Conway Testnet via:
 - ✅ **GraphQL API** for all operations (async-graphql)
 - ✅ **Modern React Frontend** with Apollo Client
 - ✅ **Conway Testnet Deployment** with automatic retry logic (5 retries, 3s delays)
-- ✅ **Multi-Wallet Support** with account switching and IndexedDB persistence
+- ✅ **Multi-Wallet Support** with MetaMask integration
 - ✅ **Owner-Based Ticket Tracking** for wallet-specific queries
 - ✅ **Hub-and-Spoke Architecture** with event stream synchronization
+- ✅ **Event Discovery** with search, filters, and sorting
+- ✅ **Ticket History & Provenance** tracking with ownership timeline
+- ✅ **Transaction History** in wallet modal
 
 ## Quick Start (Conway Testnet)
 
