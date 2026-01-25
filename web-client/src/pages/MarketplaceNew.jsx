@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import toast from 'react-hot-toast';
 import { useWallet } from '../contexts/WalletContext';
 import { useLinera } from '../providers/LineraProvider';
+import { useDebounce } from '../hooks/useDebounce';
 import { ShoppingBag, Ticket, DollarSign, Wallet, Loader2, RefreshCw, User, Hash, XCircle, Search, ArrowUpDown, Filter } from 'lucide-react';
 
 // GraphQL queries as plain strings for direct blockchain calls
@@ -174,9 +175,21 @@ const Marketplace = () => {
 
     // Wave 6: Search and Filter state
     const [searchQuery, setSearchQuery] = useState('');
+    const debouncedSearchQuery = useDebounce(searchQuery, 300); // Debounce search
     const [sortBy, setSortBy] = useState('price'); // 'price', 'eventName'
     const [sortOrder, setSortOrder] = useState('asc'); // 'asc', 'desc'
     const [hideOwnListings, setHideOwnListings] = useState(false);
+    
+    // Check if any filters are active
+    const hasActiveFilters = debouncedSearchQuery || sortBy !== 'price' || sortOrder !== 'asc' || hideOwnListings;
+    
+    // Clear all filters
+    const clearFilters = () => {
+        setSearchQuery('');
+        setSortBy('price');
+        setSortOrder('asc');
+        setHideOwnListings(false);
+    };
 
     // Fetch listings directly from blockchain
     const refetch = useCallback(async () => {
@@ -228,9 +241,9 @@ const Marketplace = () => {
             });
         }
         
-        // Search filter - by event name (from listing.eventName)
-        if (searchQuery.trim()) {
-            const query = searchQuery.toLowerCase();
+        // Search filter - by event name (from listing.eventName) - uses debounced value
+        if (debouncedSearchQuery.trim()) {
+            const query = debouncedSearchQuery.toLowerCase();
             filtered = filtered.filter(id => {
                 const listing = listingsMap[id];
                 const eventName = (listing?.eventName || '').toLowerCase();
@@ -261,7 +274,7 @@ const Marketplace = () => {
         });
         
         return filtered;
-    }, [listingIds, listingsMap, searchQuery, sortBy, sortOrder, hideOwnListings, userAddress]);
+    }, [listingIds, listingsMap, debouncedSearchQuery, sortBy, sortOrder, hideOwnListings, userAddress]);
 
     if (loading) {
         return (
@@ -402,13 +415,38 @@ const Marketplace = () => {
                             </button>
                         </>
                     )}
+                    
+                    {/* Clear Filters Button */}
+                    {hasActiveFilters && (
+                        <>
+                            <div style={{ width: '1px', height: '24px', backgroundColor: 'rgba(255,255,255,0.1)' }} />
+                            <button
+                                onClick={clearFilters}
+                                style={{
+                                    padding: '8px 12px',
+                                    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                                    border: '1px solid rgba(239, 68, 68, 0.3)',
+                                    borderRadius: '8px',
+                                    color: '#ef4444',
+                                    fontSize: '0.8rem',
+                                    cursor: 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '6px',
+                                }}
+                            >
+                                <XCircle size={14} />
+                                Clear
+                            </button>
+                        </>
+                    )}
                 </div>
                 
                 {/* Results count */}
-                {(searchQuery || hideOwnListings) && (
+                {(debouncedSearchQuery || hideOwnListings) && (
                     <div style={{ marginTop: '12px', fontSize: '0.875rem', color: '#a0a0a0' }}>
                         Showing {filteredListingIds.length} listing{filteredListingIds.length !== 1 ? 's' : ''}
-                        {searchQuery && ` matching "${searchQuery}"`}
+                        {debouncedSearchQuery && ` matching "${debouncedSearchQuery}"`}
                         {hideOwnListings && ' (excluding your listings)'}
                     </div>
                 )}

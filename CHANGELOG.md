@@ -179,6 +179,11 @@ All notable changes to the Ticketh ticketing dApp will be documented in this fil
 - **State Addition**: `ticket_history: MapView<TicketId, TicketHistory>` for provenance tracking
 - **Vite HMR Fix**: Resolved COEP blocking issue for development
 
+### UX Polish
+- **Debounced Search**: 300ms delay on search inputs to prevent excessive filtering while typing
+- **Clear Filters Button**: One-click reset for all active filters on Events and Marketplace pages
+- **useDebounce Hook**: Reusable hook in `/hooks/useDebounce.js`
+
 ### Known Limitations
 - Ticket image upload not yet implemented (planned for Wave 8)
 - Chain balance display unavailable in lightweight mode (shows when full Client connected)

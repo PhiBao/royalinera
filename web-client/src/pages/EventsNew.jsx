@@ -3,7 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { useWallet } from '../contexts/WalletContext';
 import { useLinera } from '../providers/LineraProvider';
-import { Calendar, MapPin, Users, Ticket, Plus, X, Loader2, RefreshCw, Wallet, Clock, Search, Filter, ChevronDown, ArrowUpDown } from 'lucide-react';
+import { useDebounce } from '../hooks/useDebounce';
+import { Calendar, MapPin, Users, Ticket, Plus, X, Loader2, RefreshCw, Wallet, Clock, Search, Filter, ChevronDown, ArrowUpDown, XCircle } from 'lucide-react';
 
 // GraphQL queries as plain strings for direct blockchain calls
 const GET_EVENTS_QUERY = `query GetEvents { events }`;
@@ -278,10 +279,22 @@ const Events = () => {
 
     // Wave 6: Search and Filter state
     const [searchQuery, setSearchQuery] = useState('');
+    const debouncedSearchQuery = useDebounce(searchQuery, 300); // Debounce search to prevent excessive filtering
     const [sortBy, setSortBy] = useState('date'); // 'date', 'name', 'availability'
     const [sortOrder, setSortOrder] = useState('asc'); // 'asc', 'desc'
     const [filterAvailability, setFilterAvailability] = useState('all'); // 'all', 'available', 'soldout'
     const [showFilters, setShowFilters] = useState(false);
+    
+    // Check if any filters are active
+    const hasActiveFilters = debouncedSearchQuery || sortBy !== 'date' || sortOrder !== 'asc' || filterAvailability !== 'all';
+    
+    // Clear all filters
+    const clearFilters = () => {
+        setSearchQuery('');
+        setSortBy('date');
+        setSortOrder('asc');
+        setFilterAvailability('all');
+    };
 
     // Fetch events directly from blockchain
     const refetch = useCallback(async () => {
@@ -330,9 +343,9 @@ const Events = () => {
     const filteredEventIds = useMemo(() => {
         let filtered = [...eventIds];
         
-        // Search filter - search by name, description, or venue
-        if (searchQuery.trim()) {
-            const query = searchQuery.toLowerCase();
+        // Search filter - search by name, description, or venue (uses debounced value)
+        if (debouncedSearchQuery.trim()) {
+            const query = debouncedSearchQuery.toLowerCase();
             filtered = filtered.filter(id => {
                 const event = eventsMap[id];
                 if (!event) return true; // Keep if we don't have event data yet
@@ -381,7 +394,7 @@ const Events = () => {
         });
         
         return filtered;
-    }, [eventIds, eventsMap, searchQuery, sortBy, sortOrder, filterAvailability]);
+    }, [eventIds, eventsMap, debouncedSearchQuery, sortBy, sortOrder, filterAvailability]);
 
     const handleCreate = async (e) => {
         e.preventDefault();
@@ -565,12 +578,37 @@ const Events = () => {
                             <option value="soldout" style={{ background: '#1e1e1e' }}>Sold Out</option>
                         </select>
                     </div>
+                    
+                    {/* Clear Filters Button */}
+                    {hasActiveFilters && (
+                        <>
+                            <div style={{ width: '1px', height: '24px', backgroundColor: 'rgba(255,255,255,0.1)' }} />
+                            <button
+                                onClick={clearFilters}
+                                style={{
+                                    padding: '8px 12px',
+                                    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                                    border: '1px solid rgba(239, 68, 68, 0.3)',
+                                    borderRadius: '8px',
+                                    color: '#ef4444',
+                                    fontSize: '0.8rem',
+                                    cursor: 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '6px',
+                                }}
+                            >
+                                <XCircle size={14} />
+                                Clear
+                            </button>
+                        </>
+                    )}
                 </div>
                 
                 {/* Results count */}
-                {searchQuery && (
+                {debouncedSearchQuery && (
                     <div style={{ marginTop: '12px', fontSize: '0.875rem', color: '#a0a0a0' }}>
-                        Found {filteredEventIds.length} event{filteredEventIds.length !== 1 ? 's' : ''} matching "{searchQuery}"
+                        Found {filteredEventIds.length} event{filteredEventIds.length !== 1 ? 's' : ''} matching "{debouncedSearchQuery}"
                     </div>
                 )}
             </div>
