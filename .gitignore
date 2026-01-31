@@ -11,12 +11,17 @@ node_modules/
 **/target/
 Cargo.lock
 
-# Build artifacts
+# Build artifacts (but allow web-client/public/wasm for Vercel deployment)
 /*.wasm
-/**/*.wasm
+/target/**/*.wasm
+/src/**/*.wasm
 *.so
 *.o
 *.a
+
+# Keep linera SDK wasm files for frontend
+!web-client/public/wasm/*.wasm
+!web-client/public/wasm/*.js
 
 # Frontend
 /web-frontend-static/node_modules/
