@@ -42,13 +42,17 @@ export function LineraProvider({ children }) {
   /**
    * Execute a GraphQL query on the HUB chain (marketplace chain)
    * This is needed for queries that need hub data (tickets, listings, events)
-   * Uses /api/hub proxy which connects to the linera service at port 8080
    * 
-   * NOTE: We use the 8080 proxy because direct Client connection to validators
-   * can timeout during high load. The local linera service handles retries better.
+   * In production (Vercel): Uses VITE_HUB_APP_URL directly (ngrok/cloud URL)
+   * In development: Uses /api/hub proxy which connects to linera service
    */
   const queryHub = useCallback(async (graphqlQuery, variables = {}) => {
-    console.log('[Linera] Hub chain query (via 8080 proxy)');
+    // Use direct URL in production, proxy in development
+    const hubUrl = import.meta.env.VITE_HUB_APP_URL || '/api/hub';
+    const isDirect = !!import.meta.env.VITE_HUB_APP_URL;
+    
+    console.log('[Linera] Hub chain query', isDirect ? '(direct)' : '(via proxy)');
+    console.log('[Linera] URL:', hubUrl.substring(0, 60) + '...');
     console.log('[Linera] Query:', graphqlQuery.substring(0, 100) + '...');
     
     const body = {
@@ -57,9 +61,13 @@ export function LineraProvider({ children }) {
     };
 
     try {
-      const res = await fetch('/api/hub', {
+      const res = await fetch(hubUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          // Skip ngrok browser warning page
+          ...(isDirect && { 'ngrok-skip-browser-warning': '69420' }),
+        },
         body: JSON.stringify(body),
       });
       
@@ -137,13 +145,19 @@ export function LineraProvider({ children }) {
    * This avoids the need to create a Client (which connects to validators and can timeout)
    * The linera service handles signing and retry logic internally
    * 
-   * NOTE: User must have linera service running with their wallet
+   * In production (Vercel): Uses VITE_HUB_APP_URL directly
+   * In development: Uses /api/hub proxy
    */
   const mutate = useCallback(async (graphqlMutation, variables = {}, options = {}) => {
     const { maxRetries = 5, delay = 3000, showToast = true } = options;
     const toastId = showToast ? toast.loading('Sending to blockchain...') : null;
 
-    console.log('[Linera] Mutation via 8080 backend');
+    // Use direct URL in production, proxy in development
+    const hubUrl = import.meta.env.VITE_HUB_APP_URL || '/api/hub';
+    const isDirect = !!import.meta.env.VITE_HUB_APP_URL;
+
+    console.log('[Linera] Mutation', isDirect ? '(direct)' : '(via proxy)');
+    console.log('[Linera] URL:', hubUrl.substring(0, 60) + '...');
     console.log('[Linera] Mutation:', graphqlMutation.substring(0, 100) + '...');
     console.log('[Linera] Variables:', variables);
     
@@ -155,11 +169,14 @@ export function LineraProvider({ children }) {
     // Retry loop for testnet timestamp issues
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        console.log(`[Linera] Attempt ${attempt}/${maxRetries} - sending via 8080...`);
+        console.log(`[Linera] Attempt ${attempt}/${maxRetries}...`);
         
-        const res = await fetch('/api/hub', {
+        const res = await fetch(hubUrl, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 
+            'Content-Type': 'application/json',
+            ...(isDirect && { 'ngrok-skip-browser-warning': '69420' }),
+          },
           body: JSON.stringify(body),
         });
         
