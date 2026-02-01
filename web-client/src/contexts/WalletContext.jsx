@@ -562,6 +562,56 @@ export const WalletProvider = ({ children }) => {
         });
     }, [notificationListeners]);
 
+    // Create Linera Client on-demand for mutations (lazy initialization)
+    // This avoids creating the Client on connect (which can timeout with validators)
+    // Instead, we create it only when needed for signing transactions
+    const createClient = useCallback(async () => {
+        if (!wallet || !signer || !lineraFaucet) {
+            throw new Error('Wallet not connected. Cannot create Linera Client.');
+        }
+
+        if (!lineraInitialized) {
+            throw new Error('Linera SDK not initialized');
+        }
+
+        console.log('[createClient] Creating Linera Client for mutation...');
+        
+        try {
+            const linera = await import('@linera/client');
+            
+            // Create the Client with wallet, signer, and validator options
+            // This will connect to validators and may trigger MetaMask popups
+            // NOTE: Client constructor returns a Promise, must await it!
+            console.log('[createClient] Instantiating Client with wallet and signer...');
+            
+            // Get validator URL from env or use default
+            const envUrl = import.meta.env.VITE_LINERA_NODE_URL?.trim();
+            const nodeUrl = envUrl || "https://testnet-conway.linera.net";
+            const options = { validators: [nodeUrl] };
+            
+            console.log('[createClient] Using validators:', options.validators);
+            const client = await new linera.Client(wallet, signer, options);
+            
+            console.log('[createClient] Client instantiated successfully');
+            
+            // Get the frontend (not a promise, direct call)
+            console.log('[createClient] Getting frontend...');
+            const frontend = client.frontend();
+            console.log('[createClient] Frontend obtained');
+            
+            // Get application from frontend
+            console.log('[createClient] Getting application for:', applicationId);
+            const app = await frontend.application(applicationId);
+            
+            console.log('[createClient] ✅ Client created successfully');
+            
+            return { client, frontend, application: app };
+        } catch (error) {
+            console.error('[createClient] Failed to create Client:', error);
+            throw new Error(`Failed to create Linera Client: ${error.message}`);
+        }
+    }, [wallet, signer, lineraFaucet, lineraInitialized, applicationId]);
+
     const value = {
         // Connection state
         isConnected,
@@ -602,6 +652,7 @@ export const WalletProvider = ({ children }) => {
         transfer,
         onNotification,        // Subscribe to blockchain notifications
         triggerNotification,   // Manually trigger notification callbacks
+        createClient,          // Create Linera Client on-demand for mutations
 
         // Config
         appId: applicationId,

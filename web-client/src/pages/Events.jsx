@@ -5,12 +5,18 @@ import { useWallet } from '../contexts/WalletContext';
 import { Calendar, MapPin, Users, Plus, Search, Filter, SortAsc, Wallet, RefreshCw } from 'lucide-react';
 import { motion } from 'framer-motion';
 
+// Hub URL and application ID from environment
+const HUB_URL = import.meta.env.VITE_HUB_URL || 'http://localhost:8080';
+const APPLICATION_ID = import.meta.env.VITE_LINERA_APPLICATION_ID;
+
 const Events = () => {
+    console.log('[Events] Component rendering');
     const { request, isConnected, isConnecting, openWalletModal, onNotification, lineraClient, userChainId } = useWallet();
     const navigate = useNavigate();
     const [events, setEvents] = useState([]);
     const [filteredEvents, setFilteredEvents] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
     const [showCreate, setShowCreate] = useState(false);
     const [syncing, setSyncing] = useState(false);
     
@@ -56,11 +62,55 @@ const Events = () => {
         
         inFlightRef.current = true;
         try {
-            console.log('Fetching events from local chain (synced with hub)...');
-            const data = await request(`query { events }`);
-            console.log('Events data received:', data);
+            console.log('[Events] Fetching events...');
+            setError(null); // Clear previous errors
+            
+            let data;
+            
+            // Try direct hub query first (works without wallet)
+            try {
+                const MARKETPLACE_CHAIN_ID = import.meta.env.VITE_MARKETPLACE_CHAIN_ID;
+                const url = `${HUB_URL}/chains/${MARKETPLACE_CHAIN_ID}/applications/${APPLICATION_ID}`;
+                console.log('[Events] Hub URL:', url);
+                
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        query: 'query { events }',
+                        variables: {},
+                    }),
+                });
+                
+                if (response.ok) {
+                    const json = await response.json();
+                    console.log('[Events] Hub response:', json);
+                    
+                    if (!json.errors) {
+                        data = json.data;
+                    } else {
+                        throw new Error(json.errors.map(e => e.message).join(', '));
+                    }
+                } else {
+                    throw new Error(`Hub request failed: ${response.status}`);
+                }
+            } catch (hubErr) {
+                console.error('[Events] Hub query failed:', hubErr);
+                // Fallback to wallet request if connected
+                if (isConnected && request) {
+                    console.log('[Events] Trying wallet request as fallback...');
+                    data = await request(`query { events }`);
+                } else {
+                    console.error('[Events] Cannot fallback - wallet not connected');
+                    throw hubErr;
+                }
+            }
+            
+            console.log('[Events] Data received:', data);
+            console.log('[Events] Events object:', data?.events);
             const eventsList = Object.values(data?.events || {});
-            console.log('Parsed events list:', eventsList);
+            console.log('[Events] Parsed events list:', eventsList);
+            console.log('[Events] Setting', eventsList.length, 'events to state');
             
             // Remove any pending events that now appear in the confirmed list
             const confirmedIds = new Set(eventsList.map(e => e.id?.value || e.id));
@@ -77,8 +127,11 @@ const Events = () => {
             });
             
             setEvents(eventsList);
+            console.log('[Events] Successfully set events:', eventsList.length);
         } catch (err) {
-            console.error("Failed to fetch events:", err);
+            console.error("[Events] Failed to fetch events:", err);
+            console.error("[Events] Error details:", err.message, err.stack);
+            setError(err.message);
             // Only show error toast if we have no events yet
             if (events.length === 0 && pendingEvents.length === 0) {
                 toast.error(`Failed to load events: ${err.message}`);
@@ -94,7 +147,7 @@ const Events = () => {
                 fetchEvents();
             }
         }
-    }, [request, events.length, pendingEvents.length]);
+    }, [isConnected, request]);
     
     // Manual sync button handler
     const handleSync = useCallback(async () => {
@@ -104,12 +157,13 @@ const Events = () => {
 
     // Initial fetch and notification subscription (like linera-skribble)
     useEffect(() => {
-        if (isConnected && !isConnecting) {
-            // Initial fetch
-            fetchEvents();
-            
-            // Subscribe to blockchain notifications
-            const unsubscribe = onNotification?.(() => {
+        console.log('[Events] useEffect triggered - isConnected:', isConnected, 'isConnecting:', isConnecting);
+        // Always fetch on mount (works without wallet now)
+        fetchEvents();
+        
+        // Subscribe to blockchain notifications only if connected
+        if (isConnected && !isConnecting && onNotification) {
+            const unsubscribe = onNotification(() => {
                 console.log('Blockchain notification received, refreshing events...');
                 fetchEvents();
             });
@@ -119,10 +173,9 @@ const Events = () => {
                     try { unsubscribe(); } catch (e) { console.warn(e); }
                 }
             };
-        } else if (!isConnecting) {
-            setLoading(false);
         }
-    }, [isConnected, isConnecting, onNotification, fetchEvents]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     // Filter and sort events (combine confirmed + pending)
     useEffect(() => {
@@ -257,42 +310,13 @@ const Events = () => {
         return tomorrow.toISOString().slice(0, 16);
     };
 
-    if (loading) {
+    // Show loading spinner only if still loading AND no events loaded yet
+    if (loading && events.length === 0 && pendingEvents.length === 0 && !error) {
         return (
             <div className="flex flex-col items-center justify-center py-20">
                 <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-accent-primary mb-4"></div>
                 <p className="text-text-secondary">Loading events...</p>
             </div>
-        );
-    }
-    
-    if (!isConnected) {
-        return (
-            <>
-                <div className="flex flex-col items-center justify-center min-h-[60vh]">
-                    <motion.div
-                        initial={{ opacity: 0, y: 20 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        className="text-center max-w-md mx-auto"
-                    >
-                        <div className="w-20 h-20 bg-gradient-to-br from-accent-primary to-purple-500 rounded-full flex items-center justify-center mx-auto mb-6">
-                            <Wallet size={40} className="text-white" />
-                        </div>
-                        <h2 className="text-3xl font-bold mb-4">Connect Your Wallet</h2>
-                        <p className="text-text-secondary mb-8 leading-relaxed">
-                            To view and create events, you need to connect your wallet. 
-                            Create a new wallet or import an existing one to get started.
-                        </p>
-                        <button
-                            onClick={openWalletModal}
-                            className="btn btn-primary text-lg px-8 py-4"
-                        >
-                            <Wallet size={20} />
-                            Connect Wallet
-                        </button>
-                    </motion.div>
-                </div>
-            </>
         );
     }
 
@@ -303,14 +327,47 @@ const Events = () => {
                     <h1>Events</h1>
                     <p className="text-text-secondary">Discover upcoming experiences.</p>
                 </div>
-                <button
-                    onClick={() => setShowCreate(!showCreate)}
-                    className="btn btn-primary"
-                    disabled={!isConnected}
-                >
-                    <Plus size={20} /> Create Event
-                </button>
+                <div className="flex gap-2">
+                    <button
+                        onClick={() => {
+                            console.log('[Events] Manual fetch button clicked');
+                            fetchEvents();
+                        }}
+                        className="btn btn-secondary"
+                    >
+                        <RefreshCw size={20} /> Fetch Events
+                    </button>
+                    <button
+                        onClick={() => setShowCreate(!showCreate)}
+                        className="btn btn-primary"
+                        disabled={!isConnected}
+                        title={!isConnected ? "Connect wallet to create events" : ""}
+                    >
+                        <Plus size={20} /> Create Event
+                    </button>
+                </div>
             </div>
+
+            {/* Show wallet connection banner if not connected */}
+            {!isConnected && (
+                <div className="card mb-6 bg-accent-primary/10 border-accent-primary/30">
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                            <Wallet size={20} className="text-accent-primary" />
+                            <div>
+                                <p className="font-medium text-white">Connect Wallet to Create Events</p>
+                                <p className="text-sm text-text-secondary">You're viewing in read-only mode</p>
+                            </div>
+                        </div>
+                        <button
+                            onClick={openWalletModal}
+                            className="btn btn-primary btn-sm"
+                        >
+                            Connect
+                        </button>
+                    </div>
+                </div>
+            )}
 
             {/* Search and Filter Bar */}
             <div className="card mb-6">
@@ -480,7 +537,24 @@ const Events = () => {
             )}
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {filteredEvents.length === 0 ? (
+                {error && events.length === 0 && (
+                    <div className="col-span-full card bg-red-500/10 border-red-500/30">
+                        <div className="flex items-start gap-3">
+                            <div className="text-red-500">⚠️</div>
+                            <div>
+                                <h3 className="font-bold text-red-500 mb-1">Failed to Load Events</h3>
+                                <p className="text-sm text-text-secondary">{error}</p>
+                                <button 
+                                    onClick={handleSync}
+                                    className="btn btn-sm btn-primary mt-3"
+                                >
+                                    <RefreshCw size={14} /> Retry
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+                {filteredEvents.length === 0 && !error ? (
                     <p className="text-text-secondary col-span-full text-center py-10">
                         {(events.length === 0 && pendingEvents.length === 0)
                             ? "No events found. Be the first to create one!"

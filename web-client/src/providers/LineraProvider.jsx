@@ -29,6 +29,7 @@ export function LineraProvider({ children }) {
     owner: userAddress,
     lineraOwner,
     hasFaucet,
+    createClient,  // For lazy Client creation
   } = useWallet();
   
   const [isReady, setIsReady] = useState(false);
@@ -150,6 +151,39 @@ export function LineraProvider({ children }) {
    */
   const mutate = useCallback(async (graphqlMutation, variables = {}, options = {}) => {
     const { maxRetries = 5, delay = 3000, showToast = true } = options;
+    
+    // === STEP 1: REQUEST METAMASK APPROVAL ===
+    if (userAddress && window.ethereum) {
+      // Extract operation name for user-friendly message
+      const operationMatch = graphqlMutation.match(/mutation\s+\{?\s*([a-zA-Z]+)/);
+      const operationName = operationMatch ? operationMatch[1] : 'transaction';
+      
+      // Create message to sign
+      const timestamp = Date.now();
+      const messageToSign = JSON.stringify({
+        action: operationName,
+        variables: variables,
+        timestamp: timestamp,
+        chainId: userChainId
+      }, null, 2);
+
+      console.log(`🔐 Requesting MetaMask approval for: ${operationName}`);
+      
+      try {
+        // Request signature from MetaMask - THIS SHOWS THE POPUP
+        const signature = await window.ethereum.request({
+          method: 'personal_sign',
+          params: [messageToSign, userAddress],
+        });
+        
+        console.log('✅ MetaMask approved:', signature.slice(0, 10) + '...');
+      } catch (signError) {
+        console.error('❌ MetaMask signature rejected:', signError);
+        throw new Error('Transaction cancelled by user');
+      }
+    }
+    // === END METAMASK APPROVAL ===
+
     const toastId = showToast ? toast.loading('Sending to blockchain...') : null;
 
     // Use direct URL in production, proxy in development
@@ -228,7 +262,141 @@ export function LineraProvider({ children }) {
         throw err;
       }
     }
-  }, []);
+  }, [userAddress, userChainId]);
+
+  /**
+   * Execute a GraphQL mutation directly via SDK with MetaMask signing
+   * 
+   * This creates a Linera Client on-demand and executes the mutation
+   * The signer will trigger MetaMask popup when signing is needed
+   * 
+   * @param {string} graphqlMutation - The GraphQL mutation string
+   * @param {object} variables - Variables for the mutation
+   * @param {object} options - Options like maxRetries, delay, showToast
+   * @returns {Promise} - The mutation result data
+   */
+  const mutateWithSdk = useCallback(async (graphqlMutation, variables = {}, options = {}) => {
+    const { maxRetries = 5, delay = 3000, showToast = true } = options;
+    const toastId = showToast ? toast.loading('Preparing transaction...') : null;
+
+    if (!createClient) {
+      throw new Error('createClient function not available. Make sure wallet is connected.');
+    }
+
+    console.log('[mutateWithSdk] Starting SDK mutation');
+    console.log('[mutateWithSdk] Mutation:', graphqlMutation.substring(0, 100) + '...');
+    console.log('[mutateWithSdk] Variables:', variables);
+
+    let client = null;
+    
+    try {
+      // Create Client on-demand (this may trigger MetaMask popup for connection)
+      if (toastId) toast.loading('Connecting to blockchain...', { id: toastId });
+      console.log('[mutateWithSdk] Creating Linera Client...');
+      
+      const { client: lineraClient, application: app } = await createClient();
+      client = lineraClient;
+      
+      console.log('[mutateWithSdk] Client created, executing mutation...');
+      
+      // Format query for @linera/client
+      const cleanQuery = graphqlMutation.replace(/\s+/g, ' ').trim();
+      const escapedQuery = cleanQuery.replace(/"/g, '\\"');
+      
+      let payload;
+      if (Object.keys(variables).length > 0) {
+        payload = `{ "query": "${escapedQuery}", "variables": ${JSON.stringify(variables)} }`;
+      } else {
+        payload = `{ "query": "${escapedQuery}" }`;
+      }
+
+      // Retry loop for testnet timestamp issues
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          console.log(`[mutateWithSdk] Attempt ${attempt}/${maxRetries}...`);
+          if (toastId) toast.loading(`Signing transaction (${attempt}/${maxRetries})...`, { id: toastId });
+          
+          // Execute mutation - this will trigger MetaMask popup
+          console.log('[mutateWithSdk] Calling application.query() - MetaMask popup should appear...');
+          const responseStr = await app.query(payload);
+          console.log('[mutateWithSdk] Mutation successful!');
+          
+          const json = JSON.parse(responseStr);
+          
+          if (json.errors && json.errors.length > 0) {
+            const errorMsg = json.errors.map(e => e.message).join(', ');
+            const isRetryable = errorMsg.includes('timestamp') || 
+                               errorMsg.includes('future') || 
+                               errorMsg.includes('quorum') ||
+                               errorMsg.includes('malformed');
+            
+            if (isRetryable && attempt < maxRetries) {
+              console.log(`[mutateWithSdk] Retryable error, waiting ${delay}ms...`);
+              if (toastId) toast.loading(`Validator sync... retry ${attempt}/${maxRetries}`, { id: toastId });
+              await new Promise(r => setTimeout(r, delay));
+              continue;
+            }
+            
+            if (toastId) toast.error(`Failed: ${errorMsg}`, { id: toastId });
+            throw new Error(errorMsg);
+          }
+          
+          if (toastId) toast.success('Transaction confirmed!', { id: toastId });
+          
+          // Clean up WASM resources
+          if (client) {
+            try {
+              client.free();
+              console.log('[mutateWithSdk] Client resources freed');
+            } catch (e) {
+              console.warn('[mutateWithSdk] Error freeing client:', e);
+            }
+          }
+          
+          return json.data;
+          
+        } catch (err) {
+          const errorMsg = err.message || 'Unknown error';
+          const isRetryable = errorMsg.includes('timestamp') || 
+                             errorMsg.includes('future') || 
+                             errorMsg.includes('quorum') ||
+                             errorMsg.includes('malformed') ||
+                             errorMsg.includes('timeout');
+          
+          if (isRetryable && attempt < maxRetries) {
+            console.log(`[mutateWithSdk] Retryable error: ${errorMsg}`);
+            if (toastId) toast.loading(`Retry ${attempt}/${maxRetries}...`, { id: toastId });
+            await new Promise(r => setTimeout(r, delay));
+            continue;
+          }
+          
+          // Not retryable or max retries reached
+          console.error('[mutateWithSdk] Mutation failed:', errorMsg);
+          if (toastId) toast.error(`Failed: ${errorMsg}`, { id: toastId });
+          throw err;
+        }
+      }
+      
+      throw new Error('Max retries reached');
+      
+    } catch (error) {
+      console.error('[mutateWithSdk] Error:', error);
+      if (toastId && !error.message.includes('Failed:')) {
+        toast.error(`Mutation failed: ${error.message}`, { id: toastId });
+      }
+      throw error;
+    } finally {
+      // Clean up WASM resources
+      if (client) {
+        try {
+          client.free();
+          console.log('[mutateWithSdk] Client resources freed (finally)');
+        } catch (e) {
+          console.warn('[mutateWithSdk] Error freeing client in finally:', e);
+        }
+      }
+    }
+  }, [createClient]);
 
   /**
    * Hook-like function for queries with loading state
@@ -276,7 +444,8 @@ export function LineraProvider({ children }) {
     // Direct blockchain operations
     query,       // Query user's chain (for local state)
     queryHub,    // Query hub chain (for tickets, listings, events)
-    mutate,      // Mutations go through user's chain
+    mutate,      // Mutations go through proxy (port 8080)
+    mutateWithSdk, // Mutations via direct SDK (MetaMask popup)
     
     // Helper hook
     useBlockchainQuery,

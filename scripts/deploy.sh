@@ -192,8 +192,9 @@ echo "=========================================="
 echo "  Next Steps"
 echo "=========================================="
 echo ""
-echo "  1. Start Linera service:"
-echo "     linera service --port $SERVICE_PORT"
+echo "  1. Start Linera service on marketplace chain:"
+echo "     ./scripts/start-service.sh"
+echo "     (or manually: linera service --port $SERVICE_PORT)"
 echo ""
 echo "  2. Start frontend (new terminal):"
 echo "     cd web-client && npm run dev -- --host 0.0.0.0"
@@ -204,11 +205,15 @@ echo ""
 
 # Step 6: Start Linera service (optional, with --start flag)
 if [[ "${2:-}" == "--start" ]] || [[ "${1:-}" == "--start" ]]; then
-    echo "[6/6] Starting Linera service..."
+    echo "[6/6] Starting Linera service on marketplace chain..."
+    echo "   Setting default chain to: $CHAIN_ID"
+    linera wallet set-default "$CHAIN_ID" 2>/dev/null || true
+    echo "   Starting service on port $SERVICE_PORT..."
     linera service --port $SERVICE_PORT &
     LINERA_PID=$!
     echo "   ✅ Linera service started (PID: $LINERA_PID)"
     echo "   Service running at http://localhost:$SERVICE_PORT"
+    echo "   Default chain: $CHAIN_ID"
     echo ""
     echo "   To stop: kill $LINERA_PID"
 fi

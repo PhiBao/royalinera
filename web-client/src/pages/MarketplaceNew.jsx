@@ -8,6 +8,10 @@ import { ShoppingBag, Ticket, DollarSign, Wallet, Loader2, RefreshCw, User, Hash
 // GraphQL queries as plain strings for direct blockchain calls
 const GET_LISTINGS_QUERY = `query GetListings { listings }`;
 
+// Hub URL and application ID from environment
+const HUB_URL = import.meta.env.VITE_HUB_URL || 'http://localhost:8080';
+const APPLICATION_ID = import.meta.env.VITE_LINERA_APPLICATION_ID;
+
 const GET_TICKET_QUERY = `
   query GetTicket($ticketId: String!) {
     ticket(ticketId: $ticketId) {
@@ -167,10 +171,11 @@ const styles = {
 
 const Marketplace = () => {
     const { isConnected, openWalletModal, chainId: userChainId, owner: userAddress } = useWallet();
-    const { query, mutate, isReady } = useLinera();
+    const { query, queryHub, mutate, mutateWithSdk, isReady } = useLinera();
 
     // Direct blockchain query state
     const [data, setData] = useState(null);
+    const [ticketsData, setTicketsData] = useState({}); // Store ticket details by ID
     const [loading, setLoading] = useState(true);
 
     // Wave 6: Search and Filter state
@@ -191,64 +196,150 @@ const Marketplace = () => {
         setHideOwnListings(false);
     };
 
-    // Fetch listings directly from blockchain
+    // Fetch listings directly from blockchain (works without wallet connection)
     const refetch = useCallback(async () => {
-        if (!isReady) {
-            setLoading(false);
-            return;
-        }
-        
         setLoading(true);
         try {
-            console.log('[Marketplace] Fetching listings from blockchain...');
-            const result = await query(GET_LISTINGS_QUERY);
-            console.log('[Marketplace] Blockchain response:', result);
-            setData(result);
+            console.log('[Marketplace] Fetching listings from hub...');
+            
+            // Direct fetch to hub with chain ID and application ID
+            const MARKETPLACE_CHAIN_ID = import.meta.env.VITE_MARKETPLACE_CHAIN_ID;
+            const url = `${HUB_URL}/chains/${MARKETPLACE_CHAIN_ID}/applications/${APPLICATION_ID}`;
+            console.log('[Marketplace] Hub URL:', url);
+            
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    query: GET_LISTINGS_QUERY,
+                    variables: {},
+                }),
+            });
+            
+            if (!response.ok) {
+                throw new Error(`Hub request failed: ${response.status}`);
+            }
+            
+            const json = await response.json();
+            console.log('[Marketplace] Hub response:', json);
+            
+            if (json.errors) {
+                throw new Error(json.errors.map(e => e.message).join(', '));
+            }
+            
+            setData(json.data);
+            
+            // Fetch ticket details for all listings to enable seat search
+            if (json.data?.listings) {
+                const listingIds = Object.keys(json.data.listings);
+                console.log('[Marketplace] Fetching ticket details for', listingIds.length, 'listings...');
+                
+                const ticketPromises = listingIds.map(async (ticketId) => {
+                    try {
+                        const ticketResponse = await fetch(url, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                query: GET_TICKET_QUERY,
+                                variables: { ticketId },
+                            }),
+                        });
+                        
+                        if (ticketResponse.ok) {
+                            const ticketJson = await ticketResponse.json();
+                            if (!ticketJson.errors && ticketJson.data?.ticket) {
+                                return { id: ticketId, ticket: ticketJson.data.ticket };
+                            }
+                        }
+                    } catch (err) {
+                        console.error(`[Marketplace] Failed to fetch ticket ${ticketId}:`, err);
+                    }
+                    return null;
+                });
+                
+                const tickets = await Promise.all(ticketPromises);
+                const ticketsMap = {};
+                tickets.forEach(item => {
+                    if (item) {
+                        ticketsMap[item.id] = item.ticket;
+                    }
+                });
+                console.log('[Marketplace] Loaded ticket details for', Object.keys(ticketsMap).length, 'tickets');
+                setTicketsData(ticketsMap);
+            }
         } catch (err) {
-            console.error('[Marketplace] Blockchain query failed:', err);
+            console.error('[Marketplace] Hub query failed:', err);
+            toast.error('Failed to load listings');
         } finally {
             setLoading(false);
         }
-    }, [query, isReady]);
+    }, []);
 
     useEffect(() => {
         refetch();
     }, [refetch]);
 
     const listingIds = useMemo(() => {
-        if (!data?.listings) return [];
-        if (typeof data.listings === 'object' && !Array.isArray(data.listings)) {
-            return Object.keys(data.listings);
+        if (!data?.listings) {
+            console.log('[Marketplace] No listings data:', data);
+            return [];
         }
-        return Array.isArray(data.listings) ? data.listings : [];
+        console.log('[Marketplace] Listings data type:', typeof data.listings);
+        console.log('[Marketplace] Listings data:', data.listings);
+        
+        if (typeof data.listings === 'object' && !Array.isArray(data.listings)) {
+            const ids = Object.keys(data.listings);
+            console.log('[Marketplace] Listing IDs from object:', ids);
+            return ids;
+        }
+        const ids = Array.isArray(data.listings) ? data.listings : [];
+        console.log('[Marketplace] Listing IDs from array:', ids);
+        return ids;
     }, [data]);
     
     const listingsMap = useMemo(() => {
-        if (!data?.listings || Array.isArray(data.listings)) return {};
+        if (!data?.listings || Array.isArray(data.listings)) {
+            console.log('[Marketplace] ListingsMap empty (array or no data)');
+            return {};
+        }
+        console.log('[Marketplace] ListingsMap created with keys:', Object.keys(data.listings));
         return data.listings;
     }, [data]);
 
     // Wave 6: Filter and sort listings
     const filteredListingIds = useMemo(() => {
+        console.log('[Marketplace Filter] Starting with', listingIds.length, 'listings');
         let filtered = [...listingIds];
         
         // Hide own listings filter
         if (hideOwnListings && userAddress) {
+            const beforeLength = filtered.length;
             filtered = filtered.filter(id => {
                 const listing = listingsMap[id];
                 if (!listing?.seller) return true;
                 return listing.seller.toLowerCase() !== userAddress.toLowerCase();
             });
+            console.log('[Marketplace Filter] Hide own listings:', beforeLength, '->', filtered.length);
         }
         
-        // Search filter - by event name (from listing.eventName) - uses debounced value
+        // Search filter - by event name, seat, or ticket ID - uses debounced value
         if (debouncedSearchQuery.trim()) {
             const query = debouncedSearchQuery.toLowerCase();
+            console.log('[Marketplace Filter] Searching for:', query);
+            const beforeLength = filtered.length;
             filtered = filtered.filter(id => {
                 const listing = listingsMap[id];
-                const eventName = (listing?.eventName || '').toLowerCase();
-                return eventName.includes(query);
+                const ticket = ticketsData[id];
+                const eventName = (listing?.event_name || listing?.eventName || ticket?.eventName || '').toLowerCase();
+                const seat = (ticket?.seat || '').toLowerCase();
+                const ticketId = (id || '').toLowerCase();
+                const matches = eventName.includes(query) || seat.includes(query) || ticketId.includes(query);
+                console.log('[Marketplace Filter] Ticket', id, '- event:', eventName, 'seat:', seat, 'matches:', matches);
+                return matches;
             });
+            console.log('[Marketplace Filter] After search:', beforeLength, '->', filtered.length);
         }
         
         // Sort listings
@@ -265,7 +356,9 @@ const Marketplace = () => {
                     comparison = priceA - priceB;
                     break;
                 case 'eventName':
-                    comparison = (listingA.eventName || '').localeCompare(listingB.eventName || '');
+                    const nameA = listingA.event_name || listingA.eventName || '';
+                    const nameB = listingB.event_name || listingB.eventName || '';
+                    comparison = nameA.localeCompare(nameB);
                     break;
                 default:
                     comparison = 0;
@@ -316,7 +409,7 @@ const Marketplace = () => {
                         <Search size={16} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: '#6b7280' }} />
                         <input
                             type="text"
-                            placeholder="Search listings..."
+                            placeholder="Search by event name or seat..."
                             value={searchQuery}
                             onChange={(e) => setSearchQuery(e.target.value)}
                             style={{
@@ -470,6 +563,7 @@ const Marketplace = () => {
                             key={ticketId}
                             ticketId={ticketId}
                             listing={listingsMap[ticketId]}
+                            preloadedTicket={ticketsData[ticketId]}
                             isConnected={isConnected}
                             openWalletModal={openWalletModal}
                             onBought={refetch}
@@ -486,22 +580,48 @@ const Marketplace = () => {
 };
 
 // Listing Card Component - uses direct blockchain queries
-const ListingCard = ({ ticketId, listing, isConnected, openWalletModal, onBought, userChainId, userAddress }) => {
-    const { query, mutate, isReady } = useLinera();
+const ListingCard = ({ ticketId, listing, preloadedTicket, isConnected, openWalletModal, onBought, userChainId, userAddress }) => {
+    const { query, mutate, mutateWithSdk, isReady } = useLinera();
     const [buying, setBuying] = useState(false);
     const [cancelling, setCancelling] = useState(false);
-    const [ticket, setTicket] = useState(null);
-    const [ticketLoading, setTicketLoading] = useState(true);
+    const [ticket, setTicket] = useState(preloadedTicket || null);
+    const [ticketLoading, setTicketLoading] = useState(!preloadedTicket);
 
-    // Fetch ticket details directly from blockchain
+    // Fetch ticket details from hub if not preloaded
     useEffect(() => {
+        if (preloadedTicket) {
+            setTicket(preloadedTicket);
+            setTicketLoading(false);
+            return;
+        }
+        
         const fetchTicket = async () => {
-            if (!isReady) return;
-            
             try {
-                console.log(`[ListingCard] Fetching ticket ${ticketId} from blockchain...`);
-                const result = await query(GET_TICKET_QUERY, { ticketId });
-                setTicket(result?.ticket);
+                console.log(`[ListingCard] Fetching ticket ${ticketId} from hub...`);
+                const MARKETPLACE_CHAIN_ID = import.meta.env.VITE_MARKETPLACE_CHAIN_ID;
+                const APPLICATION_ID = import.meta.env.VITE_LINERA_APPLICATION_ID;
+                const HUB_URL = import.meta.env.VITE_HUB_URL || 'http://localhost:8080';
+                const url = `${HUB_URL}/chains/${MARKETPLACE_CHAIN_ID}/applications/${APPLICATION_ID}`;
+                
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        query: GET_TICKET_QUERY,
+                        variables: { ticketId },
+                    }),
+                });
+                
+                if (response.ok) {
+                    const json = await response.json();
+                    if (!json.errors) {
+                        setTicket(json.data?.ticket);
+                    } else {
+                        console.error(`[ListingCard] Ticket query errors:`, json.errors);
+                    }
+                } else {
+                    console.error(`[ListingCard] Hub request failed: ${response.status}`);
+                }
             } catch (err) {
                 console.error(`[ListingCard] Failed to fetch ticket ${ticketId}:`, err);
             } finally {
@@ -510,7 +630,7 @@ const ListingCard = ({ ticketId, listing, isConnected, openWalletModal, onBought
         };
         
         fetchTicket();
-    }, [ticketId, query, isReady]);
+    }, [ticketId, preloadedTicket]);
 
     const handleBuy = async () => {
         if (!isConnected) {
@@ -521,11 +641,12 @@ const ListingCard = ({ ticketId, listing, isConnected, openWalletModal, onBought
         const price = listing?.price || '0';
         
         try {
-            console.log('[ListingCard] Buying ticket via direct blockchain mutation...');
+            console.log('[ListingCard] Buying ticket via direct SDK (MetaMask will popup)...');
             await mutate(BUY_TICKET_MUTATION, { ticketId, buyer: userAddress, price });
             onBought();
         } catch (err) {
             console.error('[ListingCard] Buy failed:', err);
+            // Toast already shown by mutateWithSdk
         }
         
         setBuying(false);
@@ -539,11 +660,12 @@ const ListingCard = ({ ticketId, listing, isConnected, openWalletModal, onBought
         setCancelling(true);
         
         try {
-            console.log('[ListingCard] Cancelling listing via direct blockchain mutation...');
+            console.log('[ListingCard] Cancelling listing via direct SDK (MetaMask will popup)...');
             await mutate(CANCEL_LISTING_MUTATION, { ticketId, seller: userAddress });
             onBought();
         } catch (err) {
             console.error('[ListingCard] Cancel failed:', err);
+            // Toast already shown by mutateWithSdk
         }
         
         setCancelling(false);
@@ -592,8 +714,10 @@ const ListingCard = ({ ticketId, listing, isConnected, openWalletModal, onBought
                 )}
             </div>
             <div style={styles.cardContent}>
-                <h3 style={styles.cardTitle}>{ticket?.eventName || 'Unknown Event'}</h3>
-                <p style={styles.cardSubtitle}>{ticket?.seat || 'General Admission'}</p>
+                <h3 style={styles.cardTitle}>
+                    {ticket?.eventName || listing?.event_name || listing?.eventName || 'Unknown Event'}
+                </h3>
+                <p style={styles.cardSubtitle}>{ticket?.seat || 'Loading seat info...'}</p>
                 
                 <div style={styles.cardMeta}>
                     <div style={styles.metaItem}>

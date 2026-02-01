@@ -9,6 +9,10 @@ import { Calendar, MapPin, Users, Ticket, Plus, X, Loader2, RefreshCw, Wallet, C
 // GraphQL queries as plain strings for direct blockchain calls
 const GET_EVENTS_QUERY = `query GetEvents { events }`;
 
+// Hub URL and application ID from environment
+const HUB_URL = import.meta.env.VITE_HUB_URL || 'http://localhost:8080';
+const APPLICATION_ID = import.meta.env.VITE_LINERA_APPLICATION_ID;
+
 const GET_EVENT_QUERY = `
   query GetEvent($eventId: String!) {
     event(eventId: $eventId) {
@@ -259,7 +263,7 @@ const styles = {
 const Events = () => {
     const navigate = useNavigate();
     const { isConnected, openWalletModal } = useWallet();
-    const { query, mutate, isReady } = useLinera();
+    const { query, mutate, mutateWithSdk, isReady } = useLinera();
     
     const [showCreateModal, setShowCreateModal] = useState(false);
     const [creating, setCreating] = useState(false);
@@ -296,30 +300,49 @@ const Events = () => {
         setFilterAvailability('all');
     };
 
-    // Fetch events directly from blockchain
+    // Fetch events directly from blockchain (works without wallet)
     const refetch = useCallback(async () => {
-        if (!isReady) {
-            setLoading(false);
-            return;
-        }
-        
         setLoading(true);
         setError(null);
         
         try {
-            console.log('[Events] Fetching events directly from blockchain...');
-            const result = await query(GET_EVENTS_QUERY);
-            console.log('[Events] Blockchain response:', result);
-            setData(result);
+            console.log('[EventsNew] Fetching events from hub...');
+            const MARKETPLACE_CHAIN_ID = import.meta.env.VITE_MARKETPLACE_CHAIN_ID;
+            const url = `${HUB_URL}/chains/${MARKETPLACE_CHAIN_ID}/applications/${APPLICATION_ID}`;
+            console.log('[EventsNew] Hub URL:', url);
+            
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    query: GET_EVENTS_QUERY,
+                    variables: {},
+                }),
+            });
+            
+            if (!response.ok) {
+                throw new Error(`Hub request failed: ${response.status}`);
+            }
+            
+            const json = await response.json();
+            console.log('[EventsNew] Hub response:', json);
+            
+            if (json.errors) {
+                throw new Error(json.errors.map(e => e.message).join(', '));
+            }
+            
+            setData(json.data);
+            console.log('[EventsNew] Successfully loaded events');
         } catch (err) {
-            console.error('[Events] Blockchain query failed:', err);
-            setError(err);
+            console.error('[EventsNew] Failed to fetch events:', err);
+            setError(err.message);
+            toast.error(`Failed to load events: ${err.message}`);
         } finally {
             setLoading(false);
         }
-    }, [query, isReady]);
+    }, []);
 
-    // Load events on mount and when ready
+    // Load events on mount
     useEffect(() => {
         refetch();
     }, [refetch]);
@@ -410,9 +433,9 @@ const Events = () => {
         const startTime = Math.floor(new Date(formData.date).getTime() / 1000);
         
         try {
-            console.log('[Events] Creating event via direct blockchain mutation...');
+            console.log('[Events] Creating event (MetaMask will popup)...');
             
-            // Use direct blockchain mutation with built-in retry
+            // Use proxy mutation with MetaMask approval
             await mutate(CREATE_EVENT_MUTATION, {
                 eventId,
                 name: formData.name,
@@ -636,6 +659,7 @@ const Events = () => {
                         <EventCard
                             key={eventId}
                             eventId={eventId}
+                            event={eventsMap[eventId]}
                             onMint={() => navigate(`/mint?eventId=${eventId}`)}
                         />
                     ))}
@@ -746,12 +770,18 @@ const Events = () => {
 };
 
 // Event Card Component - uses direct blockchain queries
-const EventCard = ({ eventId, onMint }) => {
+const EventCard = ({ eventId, event: preloadedEvent, onMint }) => {
     const { query, isReady } = useLinera();
-    const [event, setEvent] = useState(null);
-    const [loading, setLoading] = useState(true);
+    const [event, setEvent] = useState(preloadedEvent || null);
+    const [loading, setLoading] = useState(!preloadedEvent);
 
     useEffect(() => {
+        if (preloadedEvent) {
+            setEvent(preloadedEvent);
+            setLoading(false);
+            return;
+        }
+        
         const fetchEvent = async () => {
             if (!isReady) return;
             
@@ -767,7 +797,7 @@ const EventCard = ({ eventId, onMint }) => {
         };
         
         fetchEvent();
-    }, [eventId, query, isReady]);
+    }, [eventId, preloadedEvent, query, isReady]);
 
     const availableTickets = event ? event.maxTickets - event.mintedTickets : 0;
     const soldOut = event && availableTickets <= 0;

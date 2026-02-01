@@ -217,7 +217,7 @@ const Mint = () => {
     const navigate = useNavigate();
     const [searchParams] = useSearchParams();
     const { isConnected, openWalletModal, owner: userAddress } = useWallet();
-    const { queryHub, mutate, isReady } = useLinera();
+    const { queryHub, mutate, mutateWithSdk, isReady } = useLinera();
     
     const preselectedEventId = searchParams.get('eventId');
     
@@ -317,27 +317,24 @@ const Mint = () => {
         const blobHash = '0x' + '0'.repeat(64);
         
         try {
-            console.log('[Mint] Minting ticket via direct blockchain mutation...');
+            console.log('[Mint] Minting ticket via direct SDK (MetaMask will popup)...');
             
-            // Use showToast: false to avoid double toast - we'll show our own
-            const toastId = toast.loading('Signing and minting ticket...');
-            
+            // Use direct SDK mutation - this will trigger MetaMask popup
             await mutate(MINT_TICKET_MUTATION, {
                 eventId: selectedEventId,
                 owner: userAddress,
                 seat: seat || 'General Admission',
                 blobHash,
-            }, { showToast: false });
+            });
             
             // Longer delay to let the transaction propagate to hub chain
-            toast.success('Ticket minted successfully! Redirecting...', { id: toastId });
             await new Promise(r => setTimeout(r, 3000));
             
             // Navigate with state to trigger refresh
             navigate('/my-tickets', { state: { refresh: true, newTicketAt: Date.now() } });
         } catch (err) {
             console.error('[Mint] Mint failed:', err);
-            toast.error(err.message || 'Failed to mint ticket');
+            // Toast already shown by mutate
         }
         
         setMinting(false);

@@ -231,7 +231,7 @@ const MyTickets = () => {
     const navigate = useNavigate();
     const location = useLocation();
     const { isConnected, openWalletModal, chainId: userChainId, owner: userAddress } = useWallet();
-    const { query, queryHub, mutate, isReady } = useLinera();
+    const { query, queryHub, mutate, mutateWithSdk, isReady } = useLinera();
     
     const [actionTicket, setActionTicket] = useState(null);
     const [actionType, setActionType] = useState(null);
@@ -376,11 +376,12 @@ const MyTickets = () => {
 
     const handleCancelListing = async (ticketId) => {
         try {
-            console.log('[MyTickets] Cancelling listing via direct blockchain mutation...');
+            console.log('[MyTickets] Cancelling listing via direct SDK (MetaMask will popup)...');
             await mutate(CANCEL_LISTING_MUTATION, { ticketId, seller: userAddress });
             handleRefetch();
         } catch (err) {
             console.error('[MyTickets] Cancel listing failed:', err);
+            // Toast already shown by mutateWithSdk
         }
     };
 
@@ -418,7 +419,7 @@ const MyTickets = () => {
         setTransferring(true);
         
         try {
-            console.log('[MyTickets] Transferring ticket via direct blockchain mutation...');
+            console.log('[MyTickets] Transferring ticket via direct SDK (MetaMask will popup)...');
             await mutate(TRANSFER_TICKET_MUTATION, { 
                 ticketId: actionTicket, 
                 newOwner: transferForm.toAddress,
@@ -429,6 +430,7 @@ const MyTickets = () => {
             handleRefetch();
         } catch (err) {
             console.error('[MyTickets] Transfer failed:', err);
+            // Toast already shown by mutateWithSdk
         }
         
         setTransferring(false);
@@ -443,7 +445,7 @@ const MyTickets = () => {
         setListing(true);
         
         try {
-            console.log('[MyTickets] Listing ticket via direct blockchain mutation...');
+            console.log('[MyTickets] Listing ticket via direct SDK (MetaMask will popup)...');
             await mutate(LIST_FOR_SALE_MUTATION, { 
                 ticketId: actionTicket, 
                 seller: userAddress, 
@@ -453,6 +455,7 @@ const MyTickets = () => {
             navigate('/marketplace');
         } catch (err) {
             console.error('[MyTickets] List failed:', err);
+            // Toast already shown by mutateWithSdk
         }
         
         setListing(false);

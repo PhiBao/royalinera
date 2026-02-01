@@ -107,6 +107,10 @@ Connects to Conway Testnet via:
 - ✅ **Event Discovery** with search, filters, and sorting
 - ✅ **Ticket History & Provenance** tracking with ownership timeline
 - ✅ **Transaction History** in wallet modal
+- ✅ **MetaMask Transaction Approval** with user-friendly signing popups
+- ✅ **Enhanced Search** - Search by event name AND seat number in marketplace
+- ✅ **Automated Service Startup** - Reads marketplace chain from .env
+- ✅ **Direct SDK Integration** with graceful fallback to hub proxy
 
 ## Quick Start (Conway Testnet)
 
@@ -120,6 +124,9 @@ Connects to Conway Testnet via:
 ```bash
 # Deploy to Conway testnet (initializes wallet, builds, publishes)
 ./scripts/deploy.sh
+
+# Start Linera service on marketplace chain (reads from .env)
+./scripts/start-service.sh
 
 # If you need to reset and start fresh:
 ./scripts/deploy.sh --clean
@@ -146,7 +153,12 @@ linera publish-and-create \
   target/wasm32-unknown-unknown/release/ticketing_contract.wasm \
   target/wasm32-unknown-unknown/release/ticketing_service.wasm
 
-# Step 6: Start Linera service (Terminal 1)
+# Step 6: Start Linera service on marketplace chain (Terminal 1)
+# Option A: Use helper script (reads from .env)
+./scripts/start-service.sh
+
+# Option B: Manual command
+linera wallet set-default YOUR_MARKETPLACE_CHAIN_ID
 linera service --port 8080
 
 # Step 7: Update frontend config and run (Terminal 2)

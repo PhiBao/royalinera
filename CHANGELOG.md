@@ -164,9 +164,25 @@ All notable changes to the Ticketh ticketing dApp will be documented in this fil
   - ✅ Filter by Listed/Not Listed status
   - ✅ Quick actions for list/transfer/cancel
 
+#### Others
+- **Service Management**
+  - ✅ `scripts/start-service.sh` - Automated service startup on marketplace chain
+  - ✅ Reads `VITE_MARKETPLACE_CHAIN_ID` from `.env` or `.env.local`
+  - ✅ Validates chain exists in wallet before starting
+  - ✅ No hardcoded chain IDs - fully environment-driven
+  - ✅ Updated `scripts/deploy.sh` to use marketplace chain from environment
+- **Direct SDK Integration (Experimental)**
+  - ✅ Added `mutateWithSdk()` for direct blockchain SDK mutations
+  - ✅ Lazy Client creation on-demand (avoids validator timeout on connect)
+  - ✅ Graceful fallback to hub/proxy when validators unavailable
+  - ✅ `createClient()` helper in WalletContext for SDK operations
+
 #### Wallet Improvements
 - **MetaMask Integration**
-  - ✅ Lightweight wallet connection (skips slow validator subscription)
+  - ✅ MetaMask popup appears for all mutations (create event, mint ticket, list, buy, transfer)
+  - ✅ User-friendly signature requests with action details (operation name, variables, timestamp, chainId)
+  - ✅ Cryptographic proof of user approval before transactions execute
+  - ✅ Works with existing hub/proxy architecture for reliable execution
   - ✅ Fast connect via faucet chain claim
   - ✅ Session-persistent chain ID storage
 - **Transaction History**
@@ -178,6 +194,17 @@ All notable changes to the Ticketh ticketing dApp will be documented in this fil
 - **New Rust Types**: `TicketHistory`, `OwnershipRecord`, `PriceHistoryEntry`, `AcquisitionType`, `PriceEventType`
 - **State Addition**: `ticket_history: MapView<TicketId, TicketHistory>` for provenance tracking
 - **Vite HMR Fix**: Resolved COEP blocking issue for development
+- **MetaMask Signing Flow**:
+  1. User clicks action button (mint, list, buy, etc.)
+  2. `mutate()` requests MetaMask signature with JSON message
+  3. User approves in MetaMask popup (instant, no gas fees)
+  4. Transaction sent to hub/proxy for execution
+  5. Success notification displayed
+- **SDK Architecture**:
+  - `await new linera.Client(wallet, signer, options)` - Creates Client with validator connection
+  - `client.frontend()` - Gets frontend interface
+  - `frontend.application(appId)` - Gets application instance
+  - `application.query(mutation)` - Executes mutation (triggers MetaMask)
 
 ### UX Polish
 - **Debounced Search**: 300ms delay on search inputs to prevent excessive filtering while typing
@@ -187,6 +214,12 @@ All notable changes to the Ticketh ticketing dApp will be documented in this fil
 ### Known Limitations
 - Ticket image upload not yet implemented (planned for Wave 8)
 - Chain balance display unavailable in lightweight mode (shows when full Client connected)
+- Direct SDK approach (`mutateWithSdk`) requires stable validators
+  - Conway testnet validators sometimes unreachable (`linera.unitynodes.com` DNS failures)
+  - Recommended: Use `mutate` (with MetaMask signing) for reliable execution
+  - Future: Self-host validators for production (like Microbet approach)
+- MetaMask signing shows popup but uses hub/proxy for actual execution
+  - This is intentional - combines user approval UX with reliable backend
 
 ### Deployment
 - **Chain ID**: `72f9d0af181a93b93aed812c8dbd12cba13d73cac273d05fc20391a9e7f9dbf3`
