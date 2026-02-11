@@ -217,7 +217,7 @@ const Mint = () => {
     const navigate = useNavigate();
     const [searchParams] = useSearchParams();
     const { isConnected, openWalletModal, owner: userAddress } = useWallet();
-    const { queryHub, mutate, mutateWithSdk, isReady } = useLinera();
+    const { hubQuery, mutate, notificationCount, isConnected: lineraConnected } = useLinera();
     
     const preselectedEventId = searchParams.get('eventId');
     
@@ -235,26 +235,21 @@ const Mint = () => {
 
     // Fetch all events from hub chain
     const fetchEvents = useCallback(async () => {
-        if (!isReady) {
-            setEventsLoading(false);
-            return;
-        }
-        
         setEventsLoading(true);
         try {
             console.log('[Mint] Fetching events from hub chain...');
-            const result = await queryHub(GET_EVENTS_QUERY);
+            const result = await hubQuery(GET_EVENTS_QUERY);
             setEventsData(result);
         } catch (err) {
             console.error('[Mint] Failed to fetch events:', err);
         } finally {
             setEventsLoading(false);
         }
-    }, [queryHub, isReady]);
+    }, [hubQuery]);
 
     // Fetch selected event details from hub chain
     const fetchEvent = useCallback(async () => {
-        if (!isReady || !selectedEventId) {
+        if (!selectedEventId) {
             setSelectedEvent(null);
             return;
         }
@@ -262,18 +257,27 @@ const Mint = () => {
         setEventLoading(true);
         try {
             console.log(`[Mint] Fetching event ${selectedEventId} from hub chain...`);
-            const result = await queryHub(GET_EVENT_QUERY, { eventId: selectedEventId });
+            const result = await hubQuery(GET_EVENT_QUERY, { eventId: selectedEventId });
             setSelectedEvent(result?.event);
         } catch (err) {
             console.error('[Mint] Failed to fetch event:', err);
         } finally {
             setEventLoading(false);
         }
-    }, [queryHub, isReady, selectedEventId]);
+    }, [hubQuery, selectedEventId]);
 
     useEffect(() => {
         fetchEvents();
     }, [fetchEvents]);
+
+    // Auto-refresh events when blockchain notification fires
+    useEffect(() => {
+        if (notificationCount > 0 && isConnected) {
+            console.log('[Mint] Notification received, refreshing events...');
+            fetchEvents();
+            if (selectedEventId) fetchEvent();
+        }
+    }, [notificationCount]); // eslint-disable-line react-hooks/exhaustive-deps
 
     useEffect(() => {
         fetchEvent();
@@ -317,9 +321,9 @@ const Mint = () => {
         const blobHash = '0x' + '0'.repeat(64);
         
         try {
-            console.log('[Mint] Minting ticket via direct SDK (MetaMask will popup)...');
+            console.log('[Mint] Minting ticket via SDK...');
             
-            // Use direct SDK mutation - this will trigger MetaMask popup
+            // Execute mutation via SDK - signed locally, sent to validators
             await mutate(MINT_TICKET_MUTATION, {
                 eventId: selectedEventId,
                 owner: userAddress,
@@ -327,8 +331,8 @@ const Mint = () => {
                 blobHash,
             });
             
-            // Longer delay to let the transaction propagate to hub chain
-            await new Promise(r => setTimeout(r, 3000));
+            // Short delay to let state settle before navigating
+            await new Promise(r => setTimeout(r, 1000));
             
             // Navigate with state to trigger refresh
             navigate('/my-tickets', { state: { refresh: true, newTicketAt: Date.now() } });

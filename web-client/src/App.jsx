@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import { WalletProvider, useWallet } from './contexts/WalletContext';
 import { LineraProvider } from './providers/LineraProvider';
+import { ConfirmProvider } from './components/TransactionConfirmation';
 import Layout from './components/Layout';
 import WalletModal from './components/WalletModalNew';
 import Home from './pages/Home';
@@ -45,9 +46,11 @@ function AppContent() {
 function App() {
   return (
     <WalletProvider>
-      <LineraProvider>
-        <AppContent />
-      </LineraProvider>
+      <ConfirmProvider>
+        <LineraProvider>
+          <AppContent />
+        </LineraProvider>
+      </ConfirmProvider>
     </WalletProvider>
   );
 }

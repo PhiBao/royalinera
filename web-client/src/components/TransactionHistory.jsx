@@ -228,7 +228,7 @@ const formatAddress = (address) => {
 // Transaction history component - shows recent wallet activity
 const TransactionHistory = () => {
     const { owner } = useWallet();
-    const { queryHub, isReady } = useLinera();
+    const { hubQuery } = useLinera();
     const [transactions, setTransactions] = useState([]);
     const [loading, setLoading] = useState(true);
     const [expanded, setExpanded] = useState(false);
@@ -237,7 +237,7 @@ const TransactionHistory = () => {
     // Build transaction history from on-chain data
     // This queries the user's tickets and their history to build a timeline
     const fetchTransactions = useCallback(async () => {
-        if (!isReady || !owner) {
+        if (!owner) {
             setLoading(false);
             return;
         }
@@ -247,7 +247,7 @@ const TransactionHistory = () => {
         try {
             console.log('[TransactionHistory] Fetching for owner:', owner);
             // Get user's tickets
-            const ticketsResult = await queryHub(`
+            const ticketsResult = await hubQuery(`
                 query GetTicketsByOwner($owner: String!) {
                     ticketsByOwner(owner: $owner)
                 }
@@ -260,7 +260,7 @@ const TransactionHistory = () => {
             // For each ticket, get its history and build transactions
             for (const ticketId of ticketIds.slice(0, 10)) { // Limit to 10 for performance
                 try {
-                    const historyResult = await queryHub(`
+                    const historyResult = await hubQuery(`
                         query GetTicketHistory($ticketId: String!) {
                             ticketHistory(ticketId: $ticketId) {
                                 ownershipHistory {
@@ -318,7 +318,7 @@ const TransactionHistory = () => {
             setLoading(false);
             setRefreshing(false);
         }
-    }, [queryHub, isReady, owner]);
+    }, [hubQuery, owner]);
 
     useEffect(() => {
         if (expanded) {

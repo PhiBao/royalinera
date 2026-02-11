@@ -8,10 +8,6 @@ import { ShoppingBag, Ticket, DollarSign, Wallet, Loader2, RefreshCw, User, Hash
 // GraphQL queries as plain strings for direct blockchain calls
 const GET_LISTINGS_QUERY = `query GetListings { listings }`;
 
-// Hub URL and application ID from environment
-const HUB_URL = import.meta.env.VITE_HUB_URL || 'http://localhost:8080';
-const APPLICATION_ID = import.meta.env.VITE_LINERA_APPLICATION_ID;
-
 const GET_TICKET_QUERY = `
   query GetTicket($ticketId: String!) {
     ticket(ticketId: $ticketId) {
@@ -171,7 +167,7 @@ const styles = {
 
 const Marketplace = () => {
     const { isConnected, openWalletModal, chainId: userChainId, owner: userAddress } = useWallet();
-    const { query, queryHub, mutate, mutateWithSdk, isReady } = useLinera();
+    const { hubQuery, mutate, notificationCount, isConnected: lineraConnected } = useLinera();
 
     // Direct blockchain query state
     const [data, setData] = useState(null);
@@ -196,62 +192,25 @@ const Marketplace = () => {
         setHideOwnListings(false);
     };
 
-    // Fetch listings directly from blockchain (works without wallet connection)
+    // Fetch listings from hub chain (marketplace-wide data)
     const refetch = useCallback(async () => {
         setLoading(true);
         try {
             console.log('[Marketplace] Fetching listings from hub...');
-            
-            // Direct fetch to hub with chain ID and application ID
-            const MARKETPLACE_CHAIN_ID = import.meta.env.VITE_MARKETPLACE_CHAIN_ID;
-            const url = `${HUB_URL}/chains/${MARKETPLACE_CHAIN_ID}/applications/${APPLICATION_ID}`;
-            console.log('[Marketplace] Hub URL:', url);
-            
-            const response = await fetch(url, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    query: GET_LISTINGS_QUERY,
-                    variables: {},
-                }),
-            });
-            
-            if (!response.ok) {
-                throw new Error(`Hub request failed: ${response.status}`);
-            }
-            
-            const json = await response.json();
-            console.log('[Marketplace] Hub response:', json);
-            
-            if (json.errors) {
-                throw new Error(json.errors.map(e => e.message).join(', '));
-            }
-            
-            setData(json.data);
+            const result = await hubQuery(GET_LISTINGS_QUERY);
+            if (!result) return; // Wallet not ready yet
+            setData(result);
             
             // Fetch ticket details for all listings to enable seat search
-            if (json.data?.listings) {
-                const listingIds = Object.keys(json.data.listings);
-                console.log('[Marketplace] Fetching ticket details for', listingIds.length, 'listings...');
+            if (result?.listings) {
+                const ids = Object.keys(result.listings);
+                console.log('[Marketplace] Fetching ticket details for', ids.length, 'listings...');
                 
-                const ticketPromises = listingIds.map(async (ticketId) => {
+                const ticketPromises = ids.map(async (ticketId) => {
                     try {
-                        const ticketResponse = await fetch(url, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                query: GET_TICKET_QUERY,
-                                variables: { ticketId },
-                            }),
-                        });
-                        
-                        if (ticketResponse.ok) {
-                            const ticketJson = await ticketResponse.json();
-                            if (!ticketJson.errors && ticketJson.data?.ticket) {
-                                return { id: ticketId, ticket: ticketJson.data.ticket };
-                            }
+                        const ticketResult = await hubQuery(GET_TICKET_QUERY, { ticketId });
+                        if (ticketResult?.ticket) {
+                            return { id: ticketId, ticket: ticketResult.ticket };
                         }
                     } catch (err) {
                         console.error(`[Marketplace] Failed to fetch ticket ${ticketId}:`, err);
@@ -270,16 +229,24 @@ const Marketplace = () => {
                 setTicketsData(ticketsMap);
             }
         } catch (err) {
-            console.error('[Marketplace] Hub query failed:', err);
+            console.error('[Marketplace] Query failed:', err);
             toast.error('Failed to load listings');
         } finally {
             setLoading(false);
         }
-    }, []);
+    }, [hubQuery]);
 
     useEffect(() => {
         refetch();
     }, [refetch]);
+
+    // Auto-refresh when a blockchain notification fires
+    useEffect(() => {
+        if (notificationCount > 0 && isConnected) {
+            console.log('[Marketplace] Notification received, refreshing...');
+            refetch();
+        }
+    }, [notificationCount]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const listingIds = useMemo(() => {
         if (!data?.listings) {
@@ -579,9 +546,9 @@ const Marketplace = () => {
     );
 };
 
-// Listing Card Component - uses direct blockchain queries
+// Listing Card Component - uses SDK blockchain queries
 const ListingCard = ({ ticketId, listing, preloadedTicket, isConnected, openWalletModal, onBought, userChainId, userAddress }) => {
-    const { query, mutate, mutateWithSdk, isReady } = useLinera();
+    const { hubQuery, mutate } = useLinera();
     const [buying, setBuying] = useState(false);
     const [cancelling, setCancelling] = useState(false);
     const [ticket, setTicket] = useState(preloadedTicket || null);
@@ -598,29 +565,9 @@ const ListingCard = ({ ticketId, listing, preloadedTicket, isConnected, openWall
         const fetchTicket = async () => {
             try {
                 console.log(`[ListingCard] Fetching ticket ${ticketId} from hub...`);
-                const MARKETPLACE_CHAIN_ID = import.meta.env.VITE_MARKETPLACE_CHAIN_ID;
-                const APPLICATION_ID = import.meta.env.VITE_LINERA_APPLICATION_ID;
-                const HUB_URL = import.meta.env.VITE_HUB_URL || 'http://localhost:8080';
-                const url = `${HUB_URL}/chains/${MARKETPLACE_CHAIN_ID}/applications/${APPLICATION_ID}`;
-                
-                const response = await fetch(url, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        query: GET_TICKET_QUERY,
-                        variables: { ticketId },
-                    }),
-                });
-                
-                if (response.ok) {
-                    const json = await response.json();
-                    if (!json.errors) {
-                        setTicket(json.data?.ticket);
-                    } else {
-                        console.error(`[ListingCard] Ticket query errors:`, json.errors);
-                    }
-                } else {
-                    console.error(`[ListingCard] Hub request failed: ${response.status}`);
+                const result = await hubQuery(GET_TICKET_QUERY, { ticketId });
+                if (result?.ticket) {
+                    setTicket(result.ticket);
                 }
             } catch (err) {
                 console.error(`[ListingCard] Failed to fetch ticket ${ticketId}:`, err);
@@ -641,12 +588,11 @@ const ListingCard = ({ ticketId, listing, preloadedTicket, isConnected, openWall
         const price = listing?.price || '0';
         
         try {
-            console.log('[ListingCard] Buying ticket via direct SDK (MetaMask will popup)...');
+            console.log('[ListingCard] Buying ticket via SDK...');
             await mutate(BUY_TICKET_MUTATION, { ticketId, buyer: userAddress, price });
             onBought();
         } catch (err) {
             console.error('[ListingCard] Buy failed:', err);
-            // Toast already shown by mutateWithSdk
         }
         
         setBuying(false);
@@ -660,12 +606,12 @@ const ListingCard = ({ ticketId, listing, preloadedTicket, isConnected, openWall
         setCancelling(true);
         
         try {
-            console.log('[ListingCard] Cancelling listing via direct SDK (MetaMask will popup)...');
+            console.log('[ListingCard] Cancelling listing via SDK...');
             await mutate(CANCEL_LISTING_MUTATION, { ticketId, seller: userAddress });
             onBought();
         } catch (err) {
             console.error('[ListingCard] Cancel failed:', err);
-            // Toast already shown by mutateWithSdk
+            // Toast already shown by mutate
         }
         
         setCancelling(false);

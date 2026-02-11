@@ -11,10 +11,8 @@ const WalletButton = () => {
     // Format balance for display (truncate long decimals)
     const formatBalance = (bal) => {
         if (!bal) return null;
-        // If balance is a string like "1.234567890", truncate to 4 decimals
         const num = parseFloat(bal);
-        if (isNaN(num)) return null;
-        // Hide balance if it's 0 (unavailable in lightweight mode)
+        if (!isFinite(num) || isNaN(num)) return null;
         if (num === 0) return null;
         if (num >= 1000000) return (num / 1000000).toFixed(2) + 'M';
         if (num >= 1000) return (num / 1000).toFixed(2) + 'K';

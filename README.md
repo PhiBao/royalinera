@@ -42,23 +42,21 @@ impl Service for TicketingService {
 ### Frontend (JavaScript) - @linera/client Web SDK
 ```javascript
 // web-client/src/contexts/WalletContext.jsx - Multi-wallet support
-import * as linera from '@linera/client';
-import { PrivateKey } from '@linera/signer';
+import { initialize, Client, Faucet, signer } from '@linera/client';
 
-// Initialize WASM and create signer from mnemonic
-await linera.default('/wasm/linera_web_bg.wasm');
-const privateKeySigner = PrivateKey.fromMnemonic(mnemonic);
+// Initialize WASM (auto-resolves path)
+await initialize();
+const privateKeySigner = signer.PrivateKey.fromMnemonic(mnemonic);
 const ownerAddress = privateKeySigner.address();
 
 // Connect to Conway Faucet and claim chain
-const faucet = new linera.Faucet('https://faucet.testnet-conway.linera.net/');
+const faucet = new Faucet('https://faucet.testnet-conway.linera.net/');
 const lineraWallet = await faucet.createWallet();
 const claimedChainId = await faucet.claimChain(lineraWallet, ownerAddress);
 
 // Create Linera client for blockchain operations
-const client = new linera.Client(lineraWallet, privateKeySigner, { skipProcessInbox: false });
-const frontend = client.frontend();
-const app = await frontend.application(applicationId);
+const client = await new Client(lineraWallet, privateKeySigner, false);
+const app = await client.application(applicationId);
 ```
 
 **Key SDK Features Used:**
@@ -68,8 +66,8 @@ const app = await frontend.application(applicationId);
 - `linera_base_types` - ChainId, DataBlobHash, StreamUpdate types
 - Cross-chain messaging via `runtime.send_message()`
 - Event streaming via `runtime.emit()` and `MARKETPLACE_STREAM`
-- `@linera/client` - Web SDK for frontend blockchain interaction
-- `@linera/signer` - Wallet signing with mnemonic support
+- `@linera/client` - Web SDK (v0.15.11) for frontend blockchain interaction
+- `@linera/client/signer` - Embedded wallet signing with mnemonic support
 
 ## 🌐 Conway Testnet Deployment
 

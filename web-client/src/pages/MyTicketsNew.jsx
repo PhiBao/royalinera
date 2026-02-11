@@ -231,7 +231,7 @@ const MyTickets = () => {
     const navigate = useNavigate();
     const location = useLocation();
     const { isConnected, openWalletModal, chainId: userChainId, owner: userAddress } = useWallet();
-    const { query, queryHub, mutate, mutateWithSdk, isReady } = useLinera();
+    const { hubQuery, mutate, notificationCount, isConnected: lineraConnected } = useLinera();
     
     const [actionTicket, setActionTicket] = useState(null);
     const [actionType, setActionType] = useState(null);
@@ -251,7 +251,7 @@ const MyTickets = () => {
 
     // Fetch tickets directly from blockchain
     const fetchTickets = useCallback(async () => {
-        if (!isReady || !isConnected || !userAddress) {
+        if (!isConnected || !userAddress) {
             setLoading(false);
             return;
         }
@@ -261,8 +261,8 @@ const MyTickets = () => {
         try {
             console.log('[MyTickets] Fetching tickets from hub chain...');
             console.log('[MyTickets] Owner address:', userAddress);
-            // Use queryHub to get tickets from the marketplace/hub chain where they're stored
-            const result = await queryHub(GET_TICKETS_BY_OWNER_QUERY, { owner: userAddress });
+            // Query tickets from the hub chain (authoritative marketplace data)
+            const result = await hubQuery(GET_TICKETS_BY_OWNER_QUERY, { owner: userAddress });
             console.log('[MyTickets] Hub response:', result);
             setData(result);
         } catch (err) {
@@ -276,20 +276,20 @@ const MyTickets = () => {
         } finally {
             setLoading(false);
         }
-    }, [queryHub, isReady, isConnected, userAddress]);
+    }, [hubQuery, isConnected, userAddress]);
 
     // Fetch listings from hub chain
     const fetchListings = useCallback(async () => {
-        if (!isReady) return;
+        if (!isConnected) return;
         
         try {
             console.log('[MyTickets] Fetching listings from hub chain...');
-            const result = await queryHub(GET_LISTINGS_QUERY);
+            const result = await hubQuery(GET_LISTINGS_QUERY);
             setListingsData(result);
         } catch (err) {
             console.error('[MyTickets] Failed to fetch listings:', err);
         }
-    }, [queryHub, isReady]);
+    }, [hubQuery]);
 
     // Track initial ticket count for polling
     const initialTicketCountRef = useRef(null);
@@ -299,10 +299,19 @@ const MyTickets = () => {
         fetchListings();
     }, [fetchTickets, fetchListings]);
 
+    // Auto-refresh when a blockchain notification fires
+    // (e.g. incoming ticket transfer from hub was processed)
+    useEffect(() => {
+        if (notificationCount > 0 && isConnected) {
+            console.log('[MyTickets] Notification received, refreshing...');
+            fetchTickets();
+        }
+    }, [notificationCount]); // eslint-disable-line react-hooks/exhaustive-deps
+
     // Poll for new ticket if we came from minting
     useEffect(() => {
         const cameFromMint = location.state?.refresh && location.state?.newTicketAt;
-        if (!cameFromMint || !isReady || !isConnected || !userAddress) return;
+        if (!cameFromMint || !isConnected || !userAddress) return;
         
         console.log('[MyTickets] Came from mint, will poll for new ticket...');
         setIsPolling(true);
@@ -321,7 +330,7 @@ const MyTickets = () => {
             console.log(`[MyTickets] Polling attempt ${attempts}/${maxAttempts}...`);
             
             try {
-                const result = await queryHub(GET_TICKETS_BY_OWNER_QUERY, { owner: userAddress });
+                const result = await hubQuery(GET_TICKETS_BY_OWNER_QUERY, { owner: userAddress });
                 const currentCount = result?.ticketsByOwner?.length || 0;
                 const expectedCount = (initialTicketCountRef.current || 0) + 1;
                 
@@ -350,7 +359,7 @@ const MyTickets = () => {
         }, pollInterval);
         
         return () => clearInterval(poll);
-    }, [location.state, isReady, isConnected, userAddress, queryHub, data, navigate, location.pathname, fetchTickets]);
+    }, [location.state, isConnected, userAddress, data, navigate, location.pathname, fetchTickets]);
 
     // Build a map of ticketId -> listing info
     const listingsMap = useMemo(() => {
@@ -376,12 +385,12 @@ const MyTickets = () => {
 
     const handleCancelListing = async (ticketId) => {
         try {
-            console.log('[MyTickets] Cancelling listing via direct SDK (MetaMask will popup)...');
+            console.log('[MyTickets] Cancelling listing via SDK...');
             await mutate(CANCEL_LISTING_MUTATION, { ticketId, seller: userAddress });
             handleRefetch();
         } catch (err) {
             console.error('[MyTickets] Cancel listing failed:', err);
-            // Toast already shown by mutateWithSdk
+            // Toast shown by mutate
         }
     };
 
@@ -419,7 +428,7 @@ const MyTickets = () => {
         setTransferring(true);
         
         try {
-            console.log('[MyTickets] Transferring ticket via direct SDK (MetaMask will popup)...');
+            console.log('[MyTickets] Transferring ticket via SDK...');
             await mutate(TRANSFER_TICKET_MUTATION, { 
                 ticketId: actionTicket, 
                 newOwner: transferForm.toAddress,
@@ -430,7 +439,7 @@ const MyTickets = () => {
             handleRefetch();
         } catch (err) {
             console.error('[MyTickets] Transfer failed:', err);
-            // Toast already shown by mutateWithSdk
+            // Toast shown by mutate
         }
         
         setTransferring(false);
@@ -445,7 +454,7 @@ const MyTickets = () => {
         setListing(true);
         
         try {
-            console.log('[MyTickets] Listing ticket via direct SDK (MetaMask will popup)...');
+            console.log('[MyTickets] Listing ticket via SDK...');
             await mutate(LIST_FOR_SALE_MUTATION, { 
                 ticketId: actionTicket, 
                 seller: userAddress, 
@@ -455,7 +464,7 @@ const MyTickets = () => {
             navigate('/marketplace');
         } catch (err) {
             console.error('[MyTickets] List failed:', err);
-            // Toast already shown by mutateWithSdk
+            // Toast shown by mutate
         }
         
         setListing(false);
@@ -666,8 +675,7 @@ const MyTickets = () => {
                                     color: '#a0a0a0',
                                     lineHeight: '1.5',
                                 }}>
-                                    <strong style={{ color: '#6366f1' }}>Note:</strong> Enter the recipient's wallet address. 
-                                    In demo mode, you can transfer between demo accounts (e.g., 0x1111...1111, 0x2222...2222).
+                                    <strong style={{ color: '#6366f1' }}>Note:</strong> Enter the recipient's Linera owner address (hex format from their wallet).
                                 </div>
                                 <div style={styles.formGroup}>
                                     <label style={styles.label}>Recipient Wallet Address</label>
@@ -675,10 +683,10 @@ const MyTickets = () => {
                                         style={styles.input}
                                         value={transferForm.toAddress}
                                         onChange={(e) => setTransferForm({ ...transferForm, toAddress: e.target.value })}
-                                        placeholder="e.g. 0x2222222222222222222222222222222222222222"
+                                        placeholder="e.g. ab12cd34..."
                                         required
                                     />
-                                    <p style={styles.hint}>The recipient's Ethereum wallet address</p>
+                                    <p style={styles.hint}>The recipient's Linera owner address</p>
                                 </div>
                             </div>
                             <div style={styles.modalFooter}>
@@ -747,18 +755,17 @@ const MyTickets = () => {
 
 // Ticket Card Component - uses hub chain queries for ticket data
 const TicketCard = ({ ticketId, listing, onTransfer, onList, onCancelListing }) => {
-    const { queryHub, isReady } = useLinera();
+    const { hubQuery } = useLinera();
     const [ticket, setTicket] = useState(null);
     const [loading, setLoading] = useState(true);
 
-    // Fetch ticket details from hub chain
+    // Fetch ticket details
     useEffect(() => {
         const fetchTicket = async () => {
-            if (!isReady) return;
             
             try {
                 console.log(`[TicketCard] Fetching ticket ${ticketId} from hub chain...`);
-                const result = await queryHub(GET_TICKET_QUERY, { ticketId });
+                const result = await hubQuery(GET_TICKET_QUERY, { ticketId });
                 setTicket(result?.ticket);
             } catch (err) {
                 console.error(`[TicketCard] Failed to fetch ticket ${ticketId}:`, err);
@@ -768,7 +775,7 @@ const TicketCard = ({ ticketId, listing, onTransfer, onList, onCancelListing }) 
         };
         
         fetchTicket();
-    }, [ticketId, queryHub, isReady]);
+    }, [ticketId, hubQuery]);
 
     // Check if ticket is listed - listing is passed from parent, status must be 'Active'
     const isListed = listing && listing.status === 'Active';

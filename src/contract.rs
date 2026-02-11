@@ -132,16 +132,102 @@ impl Contract for TicketingContract {
                 if is_hub {
                     self.mint_ticket(caller_chain, owner, event_id, seat, blob_hash, image_url).await;
                 } else {
-                    // Forward mint request to hub
-                    // The hub will mint the ticket and we'll reference it
+                    // Forward to hub for authoritative processing
                     self.forward_to_hub(Message::MintTicketRequest {
-                        minter_chain: caller_chain,
-                        owner,
-                        event_id,
-                        seat,
+                        minter_chain: caller_chain.clone(),
+                        owner: owner.clone(),
+                        event_id: event_id.clone(),
+                        seat: seat.clone(),
                         blob_hash,
-                        image_url,
+                        image_url: image_url.clone(),
                     });
+
+                    // Optimistic local mint: store ticket locally for immediate display
+                    // (mirrors CreateEvent pattern: local storage + hub forwarding)
+                    if let Some(event) = self.state.events.get(&event_id).await.unwrap() {
+                        if event.organizer_chain == caller_chain
+                            && event.minted_tickets < event.max_tickets
+                        {
+                            if let Ok(hub_chain_id) = marketplace_chain.parse::<ChainId>() {
+                                let ticket_id = Ticket::create_ticket_id(
+                                    &hub_chain_id,
+                                    &self.runtime.application_id().forget_abi(),
+                                    &event_id,
+                                    &seat,
+                                    &caller_chain,
+                                    &blob_hash,
+                                    event.minted_tickets,
+                                )
+                                .expect("failed to create ticket id");
+
+                                let minted_at = self.runtime.system_time().micros() / 1000;
+                                let ticket = Ticket {
+                                    ticket_id: ticket_id.clone(),
+                                    event_id: event_id.clone(),
+                                    event_name: event.name.clone(),
+                                    seat: seat.clone(),
+                                    organizer_chain: event.organizer_chain.clone(),
+                                    owner_chain: caller_chain.clone(),
+                                    owner: owner.clone(),
+                                    minter_chain: caller_chain.clone(),
+                                    royalty_bps: event.royalty_bps,
+                                    metadata_hash: blob_hash,
+                                    last_sale_price: None,
+                                    image_url: image_url.clone(),
+                                    minted_at,
+                                };
+
+                                // Store ticket locally
+                                self.state.tickets.insert(&ticket_id, ticket).unwrap();
+
+                                // Track ownership locally
+                                let mut owned = self
+                                    .state
+                                    .owned_ticket_ids
+                                    .get(&caller_chain)
+                                    .await
+                                    .unwrap()
+                                    .unwrap_or_default();
+                                owned.insert(ticket_id.clone());
+                                self.state
+                                    .owned_ticket_ids
+                                    .insert(&caller_chain, owned)
+                                    .unwrap();
+
+                                // Update event counter locally
+                                let mut updated_event = event;
+                                updated_event.minted_tickets += 1;
+                                self.state
+                                    .events
+                                    .insert(&event_id, updated_event)
+                                    .unwrap();
+
+                                // Create initial history record
+                                use ticketing::{
+                                    AcquisitionType, OwnershipRecord, TicketHistory,
+                                };
+                                let history = TicketHistory {
+                                    ownership_history: vec![OwnershipRecord {
+                                        owner: owner.clone(),
+                                        owner_chain: caller_chain.clone(),
+                                        acquired_at: minted_at,
+                                        price_paid: None,
+                                        acquisition_type: AcquisitionType::Minted,
+                                    }],
+                                    price_history: vec![],
+                                };
+                                self.state
+                                    .ticket_history
+                                    .insert(&ticket_id, history)
+                                    .unwrap();
+
+                                eprintln!(
+                                    "[LOCAL_MINT] Optimistic ticket stored for event '{}'",
+                                    event_id.value
+                                );
+                            }
+                        }
+                    }
                     eprintln!("[FORWARD] MintTicket forwarded to hub");
                 }
             }
@@ -421,10 +507,24 @@ impl Contract for TicketingContract {
                         eprintln!("[SYNC] Event '{}' synced from hub", event_id.value);
                     }
                     StreamEvent::TicketMinted { ticket } => {
-                        // Sync ticket reference to local state
+                        // Sync ticket to local state
                         let ticket_id = ticket.ticket_id.clone();
+                        let owner_chain = ticket.owner_chain.clone();
                         self.state.tickets.insert(&ticket_id, ticket).unwrap();
-                        eprintln!("[SYNC] Ticket synced from hub");
+                        // Also sync ownership so ticketsByOwner and myTickets queries work
+                        let mut owned = self
+                            .state
+                            .owned_ticket_ids
+                            .get(&owner_chain)
+                            .await
+                            .unwrap()
+                            .unwrap_or_default();
+                        owned.insert(ticket_id);
+                        self.state
+                            .owned_ticket_ids
+                            .insert(&owner_chain, owned)
+                            .unwrap();
+                        eprintln!("[SYNC] Ticket and ownership synced from hub");
                     }
                     StreamEvent::ListingCreated { listing } | StreamEvent::ListingUpdated { listing } => {
                         // Sync listing to local state

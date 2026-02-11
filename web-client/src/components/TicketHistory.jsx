@@ -243,7 +243,7 @@ const getLabelStyle = (type) => {
 };
 
 const TicketHistory = ({ ticketId }) => {
-    const { query, isReady } = useLinera();
+    const { hubQuery } = useLinera();
     const [history, setHistory] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
@@ -251,7 +251,7 @@ const TicketHistory = ({ ticketId }) => {
 
     useEffect(() => {
         const fetchHistory = async () => {
-            if (!isReady || !ticketId) {
+            if (!ticketId) {
                 setLoading(false);
                 return;
             }
@@ -261,7 +261,7 @@ const TicketHistory = ({ ticketId }) => {
 
             try {
                 console.log(`[TicketHistory] Fetching history for ${ticketId}...`);
-                const result = await query(GET_TICKET_HISTORY_QUERY, { ticketId });
+                const result = await hubQuery(GET_TICKET_HISTORY_QUERY, { ticketId });
                 console.log('[TicketHistory] Result:', result);
                 setHistory(result?.ticketHistory);
             } catch (err) {
@@ -273,7 +273,7 @@ const TicketHistory = ({ ticketId }) => {
         };
 
         fetchHistory();
-    }, [ticketId, query, isReady]);
+    }, [ticketId, hubQuery]);
 
     if (loading) {
         return (

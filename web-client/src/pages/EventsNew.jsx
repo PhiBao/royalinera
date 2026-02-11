@@ -9,10 +9,6 @@ import { Calendar, MapPin, Users, Ticket, Plus, X, Loader2, RefreshCw, Wallet, C
 // GraphQL queries as plain strings for direct blockchain calls
 const GET_EVENTS_QUERY = `query GetEvents { events }`;
 
-// Hub URL and application ID from environment
-const HUB_URL = import.meta.env.VITE_HUB_URL || 'http://localhost:8080';
-const APPLICATION_ID = import.meta.env.VITE_LINERA_APPLICATION_ID;
-
 const GET_EVENT_QUERY = `
   query GetEvent($eventId: String!) {
     event(eventId: $eventId) {
@@ -263,7 +259,7 @@ const styles = {
 const Events = () => {
     const navigate = useNavigate();
     const { isConnected, openWalletModal } = useWallet();
-    const { query, mutate, mutateWithSdk, isReady } = useLinera();
+    const { hubQuery, mutate, notificationCount, isConnected: lineraConnected } = useLinera();
     
     const [showCreateModal, setShowCreateModal] = useState(false);
     const [creating, setCreating] = useState(false);
@@ -300,39 +296,18 @@ const Events = () => {
         setFilterAvailability('all');
     };
 
-    // Fetch events directly from blockchain (works without wallet)
+    // Fetch events from the hub chain (marketplace-wide data)
     const refetch = useCallback(async () => {
         setLoading(true);
         setError(null);
         
         try {
             console.log('[EventsNew] Fetching events from hub...');
-            const MARKETPLACE_CHAIN_ID = import.meta.env.VITE_MARKETPLACE_CHAIN_ID;
-            const url = `${HUB_URL}/chains/${MARKETPLACE_CHAIN_ID}/applications/${APPLICATION_ID}`;
-            console.log('[EventsNew] Hub URL:', url);
-            
-            const response = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    query: GET_EVENTS_QUERY,
-                    variables: {},
-                }),
-            });
-            
-            if (!response.ok) {
-                throw new Error(`Hub request failed: ${response.status}`);
+            const result = await hubQuery(GET_EVENTS_QUERY);
+            if (result) {
+                setData(result);
+                console.log('[EventsNew] Successfully loaded events');
             }
-            
-            const json = await response.json();
-            console.log('[EventsNew] Hub response:', json);
-            
-            if (json.errors) {
-                throw new Error(json.errors.map(e => e.message).join(', '));
-            }
-            
-            setData(json.data);
-            console.log('[EventsNew] Successfully loaded events');
         } catch (err) {
             console.error('[EventsNew] Failed to fetch events:', err);
             setError(err.message);
@@ -340,12 +315,20 @@ const Events = () => {
         } finally {
             setLoading(false);
         }
-    }, []);
+    }, [hubQuery]);
 
-    // Load events on mount
+    // Load events when connected (auto-connect runs on mount)
     useEffect(() => {
         refetch();
     }, [refetch]);
+
+    // Auto-refresh when a blockchain notification fires
+    useEffect(() => {
+        if (notificationCount > 0 && isConnected) {
+            console.log('[EventsNew] Notification received, refreshing...');
+            refetch();
+        }
+    }, [notificationCount]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const eventIds = useMemo(() => {
         if (!data?.events) return [];
@@ -433,9 +416,9 @@ const Events = () => {
         const startTime = Math.floor(new Date(formData.date).getTime() / 1000);
         
         try {
-            console.log('[Events] Creating event (MetaMask will popup)...');
+            console.log('[Events] Creating event via SDK...');
             
-            // Use proxy mutation with MetaMask approval
+            // Execute mutation via SDK
             await mutate(CREATE_EVENT_MUTATION, {
                 eventId,
                 name: formData.name,
@@ -771,7 +754,7 @@ const Events = () => {
 
 // Event Card Component - uses direct blockchain queries
 const EventCard = ({ eventId, event: preloadedEvent, onMint }) => {
-    const { query, isReady } = useLinera();
+    const { hubQuery } = useLinera();
     const [event, setEvent] = useState(preloadedEvent || null);
     const [loading, setLoading] = useState(!preloadedEvent);
 
@@ -783,11 +766,9 @@ const EventCard = ({ eventId, event: preloadedEvent, onMint }) => {
         }
         
         const fetchEvent = async () => {
-            if (!isReady) return;
-            
             try {
-                console.log(`[EventCard] Fetching event ${eventId} from blockchain...`);
-                const result = await query(GET_EVENT_QUERY, { eventId });
+                console.log(`[EventCard] Fetching event ${eventId} from hub...`);
+                const result = await hubQuery(GET_EVENT_QUERY, { eventId });
                 setEvent(result?.event);
             } catch (err) {
                 console.error(`[EventCard] Failed to fetch event ${eventId}:`, err);
@@ -797,7 +778,7 @@ const EventCard = ({ eventId, event: preloadedEvent, onMint }) => {
         };
         
         fetchEvent();
-    }, [eventId, preloadedEvent, query, isReady]);
+    }, [eventId, preloadedEvent, hubQuery]);
 
     const availableTickets = event ? event.maxTickets - event.mintedTickets : 0;
     const soldOut = event && availableTickets <= 0;

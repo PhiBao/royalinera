@@ -184,6 +184,10 @@ VITE_LINERA_FAUCET_URL=https://faucet.testnet-conway.linera.net
 # Deployed: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
 VITE_LINERA_APPLICATION_ID=$APP_ID
 VITE_MARKETPLACE_CHAIN_ID=$CHAIN_ID
+# Hub node service URL — set to your linera-service endpoint for marketplace reads.
+# Start with: linera service --port 8080
+# Then set: VITE_HUB_NODE_URL=http://localhost:8080
+VITE_HUB_NODE_URL=
 EOF
 echo "  📝 Frontend config: $ENV_FILE"
 

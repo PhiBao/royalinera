@@ -1,665 +1,364 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
+import React, { createContext, useContext, useState, useCallback, useRef, useEffect } from 'react';
 
-// IndexedDB helper for wallet persistence
-const DB_NAME = 'ticketh_wallet';
-const DB_VERSION = 2;
-const STORE_NAME = 'wallet_store';
+/**
+ * WalletContext — @linera/client v0.15.8 (Conway testnet).
+ *
+ * MetaMask flow:
+ *   1. MetaMask verifies the user is connected (no signing).
+ *   2. An autosigner (PrivateKey from persisted mnemonic) is used as the
+ *      sole signer and chain owner → all operations sign silently.
+ *   3. Zero MetaMask popups during normal operation.
+ *
+ * Local flow:
+ *   1. PrivateKey from mnemonic = signs everything silently.
+ */
 
-const openDB = () => {
-    return new Promise((resolve, reject) => {
-        const request = indexedDB.open(DB_NAME, DB_VERSION);
-        request.onerror = () => reject(request.error);
-        request.onsuccess = () => resolve(request.result);
-        request.onupgradeneeded = (event) => {
-            const db = event.target.result;
-            if (!db.objectStoreNames.contains(STORE_NAME)) {
-                db.createObjectStore(STORE_NAME, { keyPath: 'key' });
-            }
-        };
-    });
-};
+const FAUCET_URL = import.meta.env.VITE_LINERA_FAUCET_URL || 'https://faucet.testnet-conway.linera.net';
+const APP_ID = import.meta.env.VITE_LINERA_APPLICATION_ID || '';
+const MARKETPLACE_CHAIN_ID = import.meta.env.VITE_MARKETPLACE_CHAIN_ID || '';
 
-const dbGet = async (key) => {
-    const db = await openDB();
-    return new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, 'readonly');
-        const store = tx.objectStore(STORE_NAME);
-        const request = store.get(key);
-        request.onerror = () => reject(request.error);
-        request.onsuccess = () => resolve(request.result?.value);
-    });
-};
-
-const dbSet = async (key, value) => {
-    const db = await openDB();
-    return new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, 'readwrite');
-        const store = tx.objectStore(STORE_NAME);
-        const request = store.put({ key, value });
-        request.onerror = () => reject(request.error);
-        request.onsuccess = () => resolve();
-    });
-};
-
-const dbDelete = async (key) => {
-    const db = await openDB();
-    return new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, 'readwrite');
-        const store = tx.objectStore(STORE_NAME);
-        const request = store.delete(key);
-        request.onerror = () => reject(request.error);
-        request.onsuccess = () => resolve();
-    });
-};
+// Sanitize balance: guard against Infinity, NaN, huge raw values
+function sanitizeBalance(raw) {
+    if (raw == null) return '0';
+    const s = raw.toString();
+    const n = parseFloat(s);
+    if (!isFinite(n) || isNaN(n)) return '0';
+    if (n < 0) return '0';
+    return n.toFixed(4);
+}
 
 const WalletContext = createContext(null);
 
 export const useWallet = () => {
     const context = useContext(WalletContext);
-    if (!context) {
-        throw new Error('useWallet must be used within a WalletProvider');
-    }
+    if (!context) throw new Error('useWallet must be used within a WalletProvider');
     return context;
 };
 
-// Helper to compute keccak256 and get Address32 format (Linera hash format)
-const computeLineraOwner = async (address) => {
-    const { ethers } = await import('ethers');
-    // Remove 0x prefix if present, lowercase
-    const cleanAddress = address.toLowerCase().replace('0x', '');
-    // Pad to 32 bytes (64 hex chars) - Linera Address32 format
-    const padded = cleanAddress.padStart(64, '0');
-    // Hash it to get the CryptoHash owner format
-    const hash = ethers.keccak256('0x' + padded);
-    return hash.replace('0x', '');
-};
+// ── MetaMask Signer (matches @linera/metamask exactly) ───────────────
+// Implements the Signer interface: sign(owner, value) + containsKey(owner).
+// Each sign() call triggers MetaMask's personal_sign popup.
+class MetaMaskSigner {
+    constructor(provider) {
+        this.provider = provider;
+    }
+
+    async sign(owner, value) {
+        const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+        const connected = accounts?.find(a => a.toLowerCase() === owner.toLowerCase());
+        if (!connected) throw new Error(`MetaMask not connected with owner: ${owner}`);
+
+        const msgHex = '0x' + Array.from(new Uint8Array(value))
+            .map(b => b.toString(16).padStart(2, '0')).join('');
+        const signature = await window.ethereum.request({
+            method: 'personal_sign',
+            params: [msgHex, owner],
+        });
+        if (!signature) throw new Error('Signature rejected');
+        return signature;
+    }
+
+    async containsKey(owner) {
+        const accounts = await this.provider.send('eth_requestAccounts', []);
+        return accounts.some(a => a.toLowerCase() === owner.toLowerCase());
+    }
+
+    async address() {
+        const signer = await this.provider.getSigner();
+        return await signer.getAddress();
+    }
+}
 
 export const WalletProvider = ({ children }) => {
-    // Connection state
     const [isConnected, setIsConnected] = useState(false);
     const [isConnecting, setIsConnecting] = useState(false);
     const [connectionError, setConnectionError] = useState(null);
-
-    // Modal state
+    const [isInitialized, setIsInitialized] = useState(false);
     const [showWalletModal, setShowWalletModal] = useState(false);
 
-    // Linera client objects (populated when faucet available)
-    const [lineraClient, setLineraClient] = useState(null);
-    const [lineraFrontend, setLineraFrontend] = useState(null);
-    const [application, setApplication] = useState(null);
-    const [signer, setSigner] = useState(null);
-    const [wallet, setWallet] = useState(null);
-    const [lineraFaucet, setLineraFaucet] = useState(null); // For lazy Client creation
-    const [lineraInitialized, setLineraInitialized] = useState(false);
-    const [hasFaucet, setHasFaucet] = useState(false);
-
-    // Notification listener for state updates
-    const [notificationListeners, setNotificationListeners] = useState([]);
-
-    // Wallet state
-    const [chainId, setChainId] = useState(null);
     const [owner, setOwner] = useState(null);
-    const [lineraOwner, setLineraOwner] = useState(null); // Address32 format for contract calls
+    const [chainId, setChainId] = useState(null);
     const [balance, setBalance] = useState(null);
+    const [client, setClient] = useState(null);
+    const [chain, setChain] = useState(null);
+    const [application, setApplication] = useState(null);
+    const [walletType, setWalletType] = useState(null); // 'metamask' | 'local'
 
-    // Multi-account support
-    const [accounts, setAccounts] = useState([]);
-    const [activeAccountIndex, setActiveAccountIndex] = useState(0);
+    const [notificationCount, setNotificationCount] = useState(0);
+    const notifDebounceRef = useRef(null);
 
     const initRef = useRef(false);
+    const clientRef = useRef(null);
 
-    // Config from env - support both skribble and legacy naming conventions
-    const applicationId = import.meta.env.VITE_LINERA_APPLICATION_ID || import.meta.env.VITE_APP_ID;
-    const faucetUrl = import.meta.env.VITE_LINERA_FAUCET_URL || import.meta.env.VITE_FAUCET_URL;
-    const nodeUrl = import.meta.env.VITE_LINERA_NODE_URL || 'https://testnet-conway.linera.net';
+    const hasMetaMask = typeof window !== 'undefined' && !!window.ethereum;
 
-    // The marketplace chain - where all shared state lives (events, listings, etc.)
-    // This is the chain where the application was originally created/deployed
-    const marketplaceChainId = import.meta.env.VITE_MARKETPLACE_CHAIN_ID || 'a6f2e101a65522962a5cc4a422202e3374f9d11215258c88e7496bdaadde9635';
+    const shortOwner = owner ? `${owner.slice(0, 8)}...${owner.slice(-6)}` : null;
+    const shortChainId = chainId ? `${chainId.slice(0, 8)}...${chainId.slice(-6)}` : null;
 
-    // Check if MetaMask is the active default wallet
-    // The @linera/signer only works with MetaMask, not other wallets like Rabby
-    const isMetaMaskDefault = () => {
-        if (typeof window === 'undefined' || !window.ethereum) return false;
-        
-        // MetaMask must be present and NOT be overridden by another wallet
-        // Rabby sets isMetaMask=true but also sets isRabby=true
-        if (window.ethereum.isRabby) return false;
-        if (window.ethereum.isCoinbaseWallet) return false;
-        if (window.ethereum.isBraveWallet) return false;
-        if (window.ethereum.isOkxWallet) return false;
-        if (window.ethereum.isTrust) return false;
-        
-        // Check if it's actually MetaMask
-        return window.ethereum.isMetaMask === true;
-    };
+    // ── Core connect logic (shared by MetaMask & local) ──────────────
+    const setupClient = async (signer, ownerAddr, opts = {}) => {
+        const linera = await import('@linera/client');
 
-    // Get the name of the current wallet for display purposes
-    const getActiveWalletName = () => {
-        if (typeof window === 'undefined' || !window.ethereum) return null;
-        if (window.ethereum.isRabby) return 'Rabby';
-        if (window.ethereum.isCoinbaseWallet) return 'Coinbase Wallet';
-        if (window.ethereum.isBraveWallet) return 'Brave Wallet';
-        if (window.ethereum.isOkxWallet) return 'OKX Wallet';
-        if (window.ethereum.isTrust) return 'Trust Wallet';
-        if (window.ethereum.isMetaMask) return 'MetaMask';
-        return 'Unknown Wallet';
-    };
+        console.log('[Wallet] Faucet:', FAUCET_URL);
+        const faucet = new linera.Faucet(FAUCET_URL);
+        const lineraWallet = await faucet.createWallet();
+        const claimedChainId = await faucet.claimChain(lineraWallet, ownerAddr);
+        console.log('[Wallet] Chain claimed:', claimedChainId);
 
-    // Initialize Linera client with MetaMask signer
-    // LIGHTWEIGHT MODE: Skip Client constructor (which connects to validators and can timeout)
-    // Only get wallet address, claim chain, and store signer for later mutations
-    // Queries go through 8080 backend, mutations create Client on-demand
-    const initializeLineraClient = async () => {
-        try {
-            console.log('Initializing Linera client with MetaMask...');
+        // DO NOT call setOwner here — chain is owned by ownerAddr (MetaMask).
+        // setOwner must happen AFTER addOwner succeeds, otherwise the client
+        // tries to sign with autosigner that isn't registered yet → error.
 
-            // Check for wallet provider
-            if (typeof window === 'undefined' || !window.ethereum) {
-                throw new Error('No wallet found. Please install MetaMask.');
-            }
+        const clientInstance = await new linera.Client(lineraWallet, signer, {
+            skipProcessInbox: false,
+        });
+        console.log('[Wallet] Client created');
 
-            // Check if MetaMask is the active default wallet
-            const activeWallet = getActiveWalletName();
-            console.log('Active wallet:', activeWallet);
-            console.log('Provider details:', {
-                isMetaMask: window.ethereum.isMetaMask,
-                isRabby: window.ethereum.isRabby,
-                isCoinbaseWallet: window.ethereum.isCoinbaseWallet,
-            });
+        const chainHandle = await clientInstance.chain(claimedChainId);
+        console.log('[Wallet] Chain handle ready');
 
-            if (!isMetaMaskDefault()) {
-                throw new Error(
-                    `MetaMask must be your default wallet. Currently active: ${activeWallet}. ` +
-                    `Please disable ${activeWallet} or set MetaMask as your default wallet in the extension settings.`
-                );
-            }
-
-            // Import Linera packages
-            const linera = await import('@linera/client');
-            const { MetaMask } = await import('@linera/signer');
-
-            // Initialize WASM from public folder
-            const wasmUrl = '/wasm/linera_web_bg.wasm';
-            console.log('Loading WASM from:', wasmUrl);
-            await linera.default(wasmUrl);
-            console.log('WASM initialized');
-            setLineraInitialized(true);
-
-            // Create MetaMask signer
-            console.log('Creating MetaMask signer...');
-            let metaMaskSigner;
-            let ownerAddress;
-
-            // Request accounts from MetaMask
+        // If the signer is a PrivateKey, ensure the wallet uses it as default.
+        // (No addOwner needed — the chain is already owned by this address.)
+        if (typeof signer.address === 'function') {
             try {
-                const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
-                ownerAddress = accounts[0];
-                console.log('Got accounts from MetaMask:', accounts);
+                lineraWallet.setOwner(claimedChainId, signer.address());
+                console.log('[Wallet] Owner set to signer address (silent signing)');
             } catch (err) {
-                console.error('Failed to get accounts from MetaMask:', err);
-                throw new Error('Failed to connect to MetaMask. Please try again.');
+                console.warn('[Wallet] setOwner (non-fatal):', err.message);
             }
-
-            // Create the MetaMask signer
-            try {
-                metaMaskSigner = new MetaMask();
-                const signerAddress = await metaMaskSigner.address();
-                console.log('MetaMask signer address:', signerAddress);
-
-                // Verify the addresses match
-                if (signerAddress.toLowerCase() !== ownerAddress.toLowerCase()) {
-                    console.warn('Signer address mismatch - signer:', signerAddress, 'expected:', ownerAddress);
-                }
-            } catch (signerErr) {
-                console.error('Failed to create MetaMask signer:', signerErr);
-                throw new Error('Failed to initialize MetaMask signer. Please make sure MetaMask is unlocked and try again.');
-            }
-
-            console.log('MetaMask connected with address:', ownerAddress);
-
-            // Compute Linera owner (Address32 format) for contract operations
-            const lineraAddr = await computeLineraOwner(ownerAddress);
-            console.log('Linera owner (Address32):', lineraAddr);
-
-            // Check if we have a stored chain ID for this MetaMask address
-            const storageKey = `linera_chain_${ownerAddress.toLowerCase()}`;
-            let storedChainId = localStorage.getItem(storageKey);
-
-            // Connect to faucet
-            const faucet = new linera.Faucet(faucetUrl);
-            console.log('Faucet created at:', faucetUrl);
-
-            // LIGHTWEIGHT MODE: Just claim chain, don't create Client yet
-            // The Client constructor connects to validators and can timeout
-            // We'll create Client lazily when needed for mutations
-            let claimedChainId;
-            
-            console.log('Creating wallet from faucet...');
-            const lineraWallet = await faucet.createWallet();
-            console.log('Wallet created:', lineraWallet);
-
-            // Claim or reuse chain
-            if (storedChainId) {
-                console.log('Found stored chain ID:', storedChainId);
-                claimedChainId = storedChainId;
-                
-                // Try to claim anyway to ensure we're registered with faucet
-                try {
-                    console.log('Re-claiming chain from faucet...');
-                    const freshChainId = await faucet.claimChain(lineraWallet, ownerAddress);
-                    console.log('Faucet returned chain:', freshChainId);
-                    claimedChainId = freshChainId;
-                    
-                    if (freshChainId !== storedChainId) {
-                        console.log('Chain ID changed, updating storage');
-                        localStorage.setItem(storageKey, freshChainId);
-                    }
-                } catch (claimErr) {
-                    console.warn('Chain re-claim failed (using stored ID):', claimErr.message);
-                    // Use stored chain ID
-                }
-            } else {
-                // New wallet - must claim chain
-                console.log('No stored chain, claiming new chain from faucet...');
-                try {
-                    claimedChainId = await faucet.claimChain(lineraWallet, ownerAddress);
-                    console.log('Claimed new chain:', claimedChainId);
-                    localStorage.setItem(storageKey, claimedChainId);
-                } catch (claimErr) {
-                    console.error('Failed to claim chain:', claimErr);
-                    throw new Error('Failed to claim a chain from the faucet. The Conway testnet may be temporarily unavailable.');
-                }
-            }
-
-            console.log('✅ Lightweight wallet connection complete');
-            console.log('   Chain ID:', claimedChainId);
-            console.log('   Owner:', ownerAddress);
-            console.log('   Linera Owner:', lineraAddr);
-            console.log('   Note: Client will be created lazily when needed for mutations');
-
-            // Return wallet info without creating Client
-            // application is null - queries go through 8080 backend via queryHub
-            // Client will be created on-demand when mutate() is called
-            return {
-                client: null,           // Created lazily for mutations
-                frontend: null,         // Not needed in lightweight mode
-                application: null,      // Not needed - queries go through 8080 backend
-                signer: metaMaskSigner,
-                wallet: lineraWallet,
-                faucet: faucet,         // Keep faucet for lazy Client creation
-                chainId: claimedChainId,
-                owner: ownerAddress,
-                lineraOwner: lineraAddr,
-                balance: '0',           // Can't get balance without Client
-                hasFaucet: true,
-                walletName: 'MetaMask',
-            };
-        } catch (error) {
-            console.error('Failed to initialize Linera wallet:', error);
-            throw error;
         }
+
+        let app = null;
+        if (APP_ID) {
+            try {
+                app = await chainHandle.application(APP_ID);
+                console.log('[Wallet] App handle:', APP_ID.slice(0, 16) + '...');
+                try {
+                    await Promise.race([
+                        app.query('{ "query": "mutation { subscribeToHub }" }'),
+                        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 15000)),
+                    ]);
+                    console.log('[Wallet] Hub subscription done');
+                } catch (subErr) {
+                    console.warn('[Wallet] Hub sub (non-fatal):', subErr.message);
+                }
+            } catch (err) {
+                console.warn('[Wallet] App handle failed:', err.message);
+            }
+        }
+
+        try {
+            chainHandle.onNotification(() => {
+                if (notifDebounceRef.current) clearTimeout(notifDebounceRef.current);
+                notifDebounceRef.current = setTimeout(() => {
+                    console.log('[Wallet] Notification (debounced)');
+                    setNotificationCount(c => c + 1);
+                }, 2000);
+            });
+        } catch (notifErr) {
+            console.warn('[Wallet] onNotification (non-fatal):', notifErr.message);
+        }
+
+        let bal = '0';
+        try {
+            const rawBal = await chainHandle.balance();
+            bal = sanitizeBalance(rawBal);
+        } catch (err) {
+            console.warn('[Wallet] Balance failed:', err.message);
+        }
+
+        localStorage.setItem('linera_chain_id', claimedChainId);
+        localStorage.setItem('linera_owner', ownerAddr);
+
+        setOwner(ownerAddr);
+        setChainId(claimedChainId);
+        setBalance(bal);
+        setClient(clientInstance);
+        setChain(chainHandle);
+        setApplication(app);
+        setIsConnected(true);
+        clientRef.current = clientInstance;
+
+        console.log('[Wallet] Connected — chain:', claimedChainId);
+        return { owner: ownerAddr, chainId: claimedChainId };
     };
 
-    // Connect wallet using any EVM wallet (MetaMask, Rabby, Coinbase, etc.)
-    const connect = useCallback(async () => {
-        if (isConnecting) return;
+    // ── MetaMask connect ──────────────────────────────────────────────
+    // MetaMask is used ONLY to verify the user has a wallet. All chain
+    // signing is done by a persisted autosigner (PrivateKey) — zero
+    // MetaMask popups during normal operation.
+    const doConnectMetaMask = async () => {
+        if (!window.ethereum) throw new Error('MetaMask is not installed');
 
-        setIsConnecting(true);
-        setConnectionError(null);
+        const { ethers } = await import('ethers');
+        const linera = await import('@linera/client');
 
-        try {
-            // Initialize Linera client with whatever EVM wallet is active
-            const result = await initializeLineraClient();
+        // 1. Verify MetaMask is connected (no signing, just identity check)
+        const provider = new ethers.BrowserProvider(window.ethereum);
+        const accounts = await provider.send('eth_requestAccounts', []);
+        if (!accounts?.length) throw new Error('No MetaMask accounts');
+        console.log('[Wallet] MetaMask connected:', accounts[0]);
+        localStorage.setItem('linera_mm_address', accounts[0]);
 
-            // Build accounts array
-            const accountsArray = [{
-                index: 0,
-                owner: result.owner,
-                lineraOwner: result.lineraOwner,
-                chainId: result.chainId,
-            }];
-
-            // Update state
-            setLineraClient(result.client);
-            setLineraFrontend(result.frontend);
-            setApplication(result.application);
-            setSigner(result.signer);
-            setWallet(result.wallet);
-            setLineraFaucet(result.faucet); // Store faucet for lazy Client creation
-            setChainId(result.chainId);
-            setOwner(result.owner);
-            setHasFaucet(result.hasFaucet);
-            setLineraOwner(result.lineraOwner);
-
-            setBalance(result.balance);
-            setAccounts(accountsArray);
-            setActiveAccountIndex(0);
-            setIsConnected(true);
-            setIsConnecting(false);
-
-            console.log(`✅ Wallet connected via ${result.walletName}`);
-            console.log('   Owner (Address20):', result.owner);
-            console.log('   Linera Owner (Address32):', result.lineraOwner);
-            console.log('   Chain:', result.chainId);
-            console.log('   Balance:', result.balance);
-
-            // Note: Hub subscription removed - it was causing extra signature prompts
-            // State sync happens via queryHub() when needed
-
-            return result;
-        } catch (error) {
-            console.error('Wallet connection failed:', error);
-            setConnectionError(error.message);
-            setIsConnecting(false);
-            throw error;
-        }
-    }, [isConnecting, faucetUrl, applicationId, nodeUrl]);
-
-    // Disconnect wallet
-    const disconnect = useCallback(async () => {
-        // Free WASM resources
-        if (lineraClient) {
-            try {
-                lineraClient.free();
-            } catch (e) {
-                console.warn('Error freeing client:', e);
-            }
+        // 2. Get or create persisted autosigner (signs everything silently)
+        const PrivateKey = linera.signer.PrivateKey;
+        let autosigner;
+        const savedMnemonic = localStorage.getItem('linera_autosigner_mnemonic');
+        if (savedMnemonic) {
+            autosigner = PrivateKey.fromMnemonic(savedMnemonic);
+            console.log('[Wallet] Restored autosigner:', autosigner.address());
+        } else {
+            const randomWallet = ethers.Wallet.createRandom();
+            const mnemonic = randomWallet.mnemonic.phrase;
+            autosigner = PrivateKey.fromMnemonic(mnemonic);
+            localStorage.setItem('linera_autosigner_mnemonic', mnemonic);
+            console.log('[Wallet] New autosigner:', autosigner.address());
         }
 
-        setLineraClient(null);
-        setLineraFrontend(null);
-        setApplication(null);
-        setSigner(null);
-        setWallet(null);
-        setChainId(null);
-        setOwner(null);
-        setLineraOwner(null);
-        setBalance(null);
-        setAccounts([]);
-        setIsConnected(false);
-        setHasFaucet(false);
+        localStorage.setItem('linera_wallet_type', 'metamask');
+        setWalletType('metamask');
 
-        // Clear IndexedDB
-        await dbDelete('mnemonic');
-        await dbDelete('accounts');
-        await dbDelete('activeAccountIndex');
+        // 3. Use autosigner as sole signer — chain owned by autosigner,
+        //    all operations sign silently (no MetaMask popups).
+        return setupClient(autosigner, autosigner.address());
+    };
 
-        console.log('Wallet disconnected');
-    }, [lineraClient]);
+    // ── Local wallet connect ─────────────────────────────────────────
+    const doConnectLocal = async (existingMnemonic = null) => {
+        const linera = await import('@linera/client');
+        const { ethers } = await import('ethers');
 
-    // Add new account (claim new chain from faucet)
-    const addAccount = useCallback(async () => {
-        if (!wallet || !signer) throw new Error('Faucet not available - cannot add account');
-
-        const mnemonic = await dbGet('mnemonic');
-        if (!mnemonic) throw new Error('No mnemonic found');
-
-        const newIndex = accounts.length;
-
-        try {
-            const linera = await import('@linera/client');
-
-            // Use the same owner address
-            const newOwner = signer.address();
-            const newLineraOwner = await computeLineraOwner(newOwner);
-
-            // Claim a new chain
-            const faucet = new linera.Faucet(faucetUrl);
-            const newChainId = await faucet.claimChain(wallet, newOwner);
-
-            const newAccount = {
-                index: newIndex,
-                owner: newOwner,
-                lineraOwner: newLineraOwner,
-                chainId: newChainId,
-            };
-
-            const updatedAccounts = [...accounts, newAccount];
-            setAccounts(updatedAccounts);
-            await dbSet('accounts', updatedAccounts);
-
-            return newAccount;
-        } catch (error) {
-            console.error('Failed to add account:', error);
-            throw error;
+        let mnemonic = existingMnemonic;
+        if (!mnemonic) {
+            const generated = ethers.Wallet.createRandom();
+            mnemonic = generated.mnemonic.phrase;
         }
-    }, [accounts, wallet, signer, faucetUrl]);
 
-    // Switch active account
-    const switchAccount = useCallback(async (accountIndex) => {
-        const account = accounts[accountIndex];
-        if (!account) throw new Error('Account not found');
+        const PrivateKey = linera.signer.PrivateKey;
+        const sk = PrivateKey.fromMnemonic(mnemonic);
+        const ownerAddr = sk.address();
+        console.log('[Wallet] Local owner:', ownerAddr);
 
-        setChainId(account.chainId);
-        setActiveAccountIndex(accountIndex);
-        await dbSet('activeAccountIndex', accountIndex);
+        localStorage.setItem('linera_mnemonic', mnemonic);
+        localStorage.setItem('linera_wallet_type', 'local');
+        setWalletType('local');
 
-        console.log('Switched to account:', accountIndex, account.chainId);
-    }, [accounts]);
+        return setupClient(sk, ownerAddr);
+    };
 
-    // No auto-connect - user must explicitly click connect
-    // EVM wallets require user interaction to request accounts
+    // ── WASM init + auto-restore ─────────────────────────────────────
     useEffect(() => {
         if (initRef.current) return;
         initRef.current = true;
 
-        // Listen for wallet account changes (works with any EVM wallet)
-        if (typeof window !== 'undefined' && window.ethereum) {
-            window.ethereum.on('accountsChanged', async (accounts) => {
-                console.log('Wallet accounts changed:', accounts);
-                if (accounts.length === 0) {
-                    // User disconnected wallet
-                    await disconnect();
-                } else if (isConnected) {
-                    // User switched accounts, disconnect and let them reconnect
-                    console.log('Account switched, disconnecting...');
-                    await disconnect();
-                    // Don't auto-reconnect - let user click connect again
-                }
-            });
+        (async () => {
+            try {
+                const linera = await import('@linera/client');
+                const initFn = linera.initialize || linera.default;
+                await initFn({ module_or_path: '/wasm/index_bg.wasm' });
+                setIsInitialized(true);
+                console.log('[Wallet] WASM initialized');
 
-            window.ethereum.on('chainChanged', () => {
-                console.log('Wallet chain changed, reloading...');
-                window.location.reload();
-            });
-        }
+                const savedType = localStorage.getItem('linera_wallet_type');
+                if (savedType) {
+                    console.log('[Wallet] Restoring session (' + savedType + ')...');
+                    setIsConnecting(true);
+                    try {
+                        if (savedType === 'metamask' && window.ethereum) {
+                            await doConnectMetaMask();
+                        } else if (savedType === 'local') {
+                            const m = localStorage.getItem('linera_mnemonic');
+                            if (m) await doConnectLocal(m);
+                        }
+                    } catch (err) {
+                        console.warn('[Wallet] Restore failed:', err.message);
+                        localStorage.removeItem('linera_wallet_type');
+                        localStorage.removeItem('linera_mnemonic');
+                        localStorage.removeItem('linera_chain_id');
+                        localStorage.removeItem('linera_owner');
+                        localStorage.removeItem('linera_mm_address');
+                        localStorage.removeItem('linera_autosigner_mnemonic');
+                    } finally {
+                        setIsConnecting(false);
+                    }
+                }
+            } catch (err) {
+                console.error('[Wallet] WASM init failed:', err);
+                setIsInitialized(true);
+            }
+        })();
     }, []);
 
-    // GraphQL request helper - uses Linera Application
-    // With InitialStateSync, user chains now have local copies of marketplace data
-    // so we always query the user's local chain (no hub proxy needed)
-    const request = useCallback(async (query, variables = {}) => {
-        console.log('Making GraphQL request');
-        console.log('Query:', query);
-
-        // Format query as JSON string for @linera/client Application.query()
-        // Must match skribble format: '{ "query": "THE_GRAPHQL_QUERY" }'
-        const cleanQuery = query.replace(/\s+/g, ' ').trim();
-        const escapedQuery = cleanQuery.replace(/"/g, '\\"');
-
-        // Build payload in skribble format with properly escaped JSON
-        let payload;
-        if (Object.keys(variables).length > 0) {
-            payload = `{ "query": "${escapedQuery}", "variables": ${JSON.stringify(variables)} }`;
-        } else {
-            payload = `{ "query": "${escapedQuery}" }`;
-        }
-
-        // Query user's local chain (which has synced data from hub)
-        if (application) {
-            console.log('Using user chain application (synced with hub)');
-            console.log('Payload:', payload);
-
-            const responseStr = await application.query(payload);
-            console.log('Raw response (via User Application):', responseStr);
-
-            const json = JSON.parse(responseStr);
-            console.log('Parsed response:', json);
-
-            if (json.errors) {
-                throw new Error(json.errors.map(e => e.message).join(', '));
-            }
-            return json.data;
-        }
-
-        // No application available
-        throw new Error('Linera Application not available. Please connect your wallet first.');
-    }, [application]);
-
-    // Transfer funds using Linera client
-    const transfer = useCallback(async (recipient, amount) => {
-        if (!lineraClient) {
-            throw new Error('Linera client not initialized');
-        }
-
+    // ── Public connect (called from WalletModal) ─────────────────────
+    const connect = useCallback(async (type = 'local') => {
+        if (isConnecting) return;
+        setIsConnecting(true);
+        setConnectionError(null);
         try {
-            await lineraClient.transfer({
-                donor: owner,
-                recipient,
-                amount,
-            });
-
-            // Refresh balance
-            const newBalance = await lineraClient.balance();
-            setBalance(newBalance);
-        } catch (error) {
-            console.error('Transfer failed:', error);
-            throw error;
+            const result = type === 'metamask'
+                ? await doConnectMetaMask()
+                : await doConnectLocal(null);
+            setShowWalletModal(false);
+            return result;
+        } catch (err) {
+            console.error('[Wallet] Connect failed:', err);
+            setConnectionError(err.message);
+            throw err;
+        } finally {
+            setIsConnecting(false);
         }
-    }, [lineraClient, owner]);
+    }, [isConnecting]);
 
-    // Subscribe to blockchain notifications (like linera-skribble pattern)
-    // This allows components to refresh data when the blockchain state changes
-    const onNotification = useCallback((callback) => {
-        if (!lineraClient) {
-            console.warn('Cannot subscribe to notifications: client not initialized');
-            return () => { };
+    const disconnect = useCallback(async () => {
+        if (clientRef.current) {
+            try { clientRef.current.free(); } catch (e) {}
         }
+        localStorage.removeItem('linera_mnemonic');
+        localStorage.removeItem('linera_wallet_type');
+        localStorage.removeItem('linera_chain_id');
+        localStorage.removeItem('linera_owner');
+        localStorage.removeItem('linera_mm_address');
+        localStorage.removeItem('linera_autosigner_mnemonic');
+        setOwner(null);
+        setChainId(null);
+        setBalance(null);
+        setClient(null);
+        setChain(null);
+        setApplication(null);
+        setIsConnected(false);
+        setWalletType(null);
+        clientRef.current = null;
+        if (notifDebounceRef.current) clearTimeout(notifDebounceRef.current);
+        console.log('[Wallet] Disconnected');
+    }, []);
 
-        // Try to use the client's onNotification method if available
-        try {
-            const unsub = lineraClient.onNotification?.(callback);
-            if (typeof unsub === 'function') {
-                console.log('Subscribed to blockchain notifications');
-                return unsub;
-            }
-        } catch (e) {
-            console.warn('Failed to subscribe to blockchain notifications:', e);
-        }
-
-        // Fallback: add to local listeners for manual polling
-        setNotificationListeners(prev => [...prev, callback]);
-        return () => {
-            setNotificationListeners(prev => prev.filter(cb => cb !== callback));
+    // ── Periodic balance refresh ─────────────────────────────────────
+    useEffect(() => {
+        if (!isConnected || !chain) return;
+        const refresh = async () => {
+            try {
+                const rawBal = await chain.balance();
+                setBalance(sanitizeBalance(rawBal));
+            } catch (err) { /* silence */ }
         };
-    }, [lineraClient]);
-
-    // Manually trigger notification callbacks (for polling fallback)
-    const triggerNotification = useCallback(() => {
-        notificationListeners.forEach(cb => {
-            try { cb(); } catch (e) { console.warn('Notification callback error:', e); }
-        });
-    }, [notificationListeners]);
-
-    // Create Linera Client on-demand for mutations (lazy initialization)
-    // This avoids creating the Client on connect (which can timeout with validators)
-    // Instead, we create it only when needed for signing transactions
-    const createClient = useCallback(async () => {
-        if (!wallet || !signer || !lineraFaucet) {
-            throw new Error('Wallet not connected. Cannot create Linera Client.');
-        }
-
-        if (!lineraInitialized) {
-            throw new Error('Linera SDK not initialized');
-        }
-
-        console.log('[createClient] Creating Linera Client for mutation...');
-        
-        try {
-            const linera = await import('@linera/client');
-            
-            // Create the Client with wallet, signer, and validator options
-            // This will connect to validators and may trigger MetaMask popups
-            // NOTE: Client constructor returns a Promise, must await it!
-            console.log('[createClient] Instantiating Client with wallet and signer...');
-            
-            // Get validator URL from env or use default
-            const envUrl = import.meta.env.VITE_LINERA_NODE_URL?.trim();
-            const nodeUrl = envUrl || "https://testnet-conway.linera.net";
-            const options = { validators: [nodeUrl] };
-            
-            console.log('[createClient] Using validators:', options.validators);
-            const client = await new linera.Client(wallet, signer, options);
-            
-            console.log('[createClient] Client instantiated successfully');
-            
-            // Get the frontend (not a promise, direct call)
-            console.log('[createClient] Getting frontend...');
-            const frontend = client.frontend();
-            console.log('[createClient] Frontend obtained');
-            
-            // Get application from frontend
-            console.log('[createClient] Getting application for:', applicationId);
-            const app = await frontend.application(applicationId);
-            
-            console.log('[createClient] ✅ Client created successfully');
-            
-            return { client, frontend, application: app };
-        } catch (error) {
-            console.error('[createClient] Failed to create Client:', error);
-            throw new Error(`Failed to create Linera Client: ${error.message}`);
-        }
-    }, [wallet, signer, lineraFaucet, lineraInitialized, applicationId]);
+        const interval = setInterval(refresh, 15000);
+        return () => clearInterval(interval);
+    }, [isConnected, chain]);
 
     const value = {
-        // Connection state
-        isConnected,
-        isConnecting,
-        connectionError,
-        lineraInitialized,
-        hasFaucet,
-
-        // Linera objects
-        lineraClient,
-        lineraFrontend,
-        application,
-        signer,
-
-        // Wallet data
-        chainId,
-        owner,
-        address: owner, // Alias for compatibility with older components
-        lineraOwner, // Address32 format for contract operations
-        balance,
-
-        // Multi-account
-        accounts,
-        activeAccountIndex,
-
-        // Modal state
-        showWalletModal,
-        setShowWalletModal,
+        isConnected, isConnecting, connectionError, isInitialized,
+        lineraInitialized: isInitialized, hasFaucet: !!FAUCET_URL,
+        showWalletModal, setShowWalletModal,
         openWalletModal: () => setShowWalletModal(true),
         closeWalletModal: () => setShowWalletModal(false),
-
-        // Actions
-        connect,
-        disconnect,
-        addAccount,
-        switchAccount,
-        request,
-        transfer,
-        onNotification,        // Subscribe to blockchain notifications
-        triggerNotification,   // Manually trigger notification callbacks
-        createClient,          // Create Linera Client on-demand for mutations
-
-        // Config
-        appId: applicationId,
-        userChainId: chainId, // Full chain ID for use in components
-        shortOwner: owner ? `${owner.slice(0, 6)}...${owner.slice(-4)}` : null,
-        shortAddress: owner ? `${owner.slice(0, 6)}...${owner.slice(-4)}` : null, // Alias for compatibility
-        shortChainId: chainId ? `${chainId.slice(0, 8)}...` : null,
+        owner, lineraOwner: owner, address: owner,
+        chainId, userChainId: chainId, balance,
+        shortOwner, shortAddress: shortOwner, shortChainId,
+        client, chain, application,
+        walletType, hasMetaMask,
+        notificationCount,
+        connect, disconnect,
+        appId: APP_ID, hubChainId: MARKETPLACE_CHAIN_ID,
     };
 
     return (
